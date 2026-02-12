@@ -225,7 +225,7 @@
 }
 - 参数：message
 
-## note 备注
+## note 备注（AutoGLM仅占位实现，并未执行实际业务逻辑）
 - 字典：{
   "type": "COMMAND",
   "request_id": "xxxx-uuid",
@@ -236,7 +236,7 @@
 }
 - 参数：message
 
-## call_api 调用API
+## call_api 调用API（AutoGLM仅占位实现，并未执行实际业务逻辑）
 - 字典：{
   "type": "COMMAND",
   "request_id": "xxxx-uuid",
@@ -247,7 +247,7 @@
 }
 - 参数：instruction
 
-## interact 交互
+## interact 交互（AutoGLM仅占位实现，并未执行实际业务逻辑）
 - 字典：{
   "type": "COMMAND",
   "request_id": "xxxx-uuid",
