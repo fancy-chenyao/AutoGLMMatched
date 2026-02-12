@@ -482,8 +482,7 @@ class MobileService : Service() {
                     val error = message.optString("error", "Unknown error")
                     Log.e(TAG, "收到错误消息: $error")
                 }
-                
-                "user_question" -> {
+                MessageProtocol.MessageType.USER_QUESTION -> {
                     // Phase 3: 处理交互式问答
                     Log.d(TAG, "收到用户问题消息")
                     questionHandler?.handleQuestionMessage(message) ?: run {

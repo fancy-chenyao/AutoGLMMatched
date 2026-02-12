@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import utlis.PageChangeVerifier
 import utlis.PageStableVerifier
+import utlis.HttpUploader
 
 /**
  * 命令处理器
@@ -146,7 +147,7 @@ object CommandHandler {
                         Log.e(TAG, "处理截图命令异常", e)
                         protectedCallback(createErrorResponse("Exception: ${e.message}"))
                     }
-        }
+                }
             }
             "get_state" -> {
                 val handler = Handler(Looper.getMainLooper())
@@ -168,9 +169,6 @@ object CommandHandler {
             "tap" -> {
                 handleTap(requestId, params, activity, protectedCallback)
             }
-            "tap_by_index" -> {
-                handleTapByIndex(requestId, params, activity, protectedCallback)
-            }
             "swipe" -> {
                 handleSwipe(requestId, params, activity, protectedCallback)
             }
@@ -180,11 +178,33 @@ object CommandHandler {
             "back" -> {
                 handleBack(requestId, params, activity, protectedCallback)
             }
-            "press_key" -> {
-                handlePressKey(requestId, params, activity, protectedCallback)
+            "home" -> {
+                handleHome(requestId, params, activity, protectedCallback)
             }
-            "start_app" -> {
-                handleStartApp(requestId, params, activity, protectedCallback)
+
+            "double tap" -> {
+                handleDoubleTap(requestId, params, activity, protectedCallback)
+            }
+            "long press" -> {
+                handleLongPress(requestId, params, activity, protectedCallback)
+            }
+            "wait" -> {
+                handleWait(requestId, params, activity, protectedCallback)
+            }
+            "take_over" -> {
+                handleTakeOver(requestId, params, activity, protectedCallback)
+            }
+            "note" -> {
+                handleNote(requestId, params, activity, protectedCallback)
+            }
+            "call_api" -> {
+                handleCallApi(requestId, params, activity, protectedCallback)
+            }
+            "interact" -> {
+                handleInteract(requestId, params, activity, protectedCallback)
+            }
+            "finish" -> {
+                handleFinish(requestId, params, activity, protectedCallback)
             }
             else -> {
                 Log.w(TAG, "未知命令: $command")
@@ -404,21 +424,40 @@ object CommandHandler {
     /**
      * 处理tap命令 - 点击操作
      */
+    /**
+     * 处理tap命令 - 点击操作（支持 element 或 index 参数，兼容 x/y）
+     */
     private fun handleTap(
         requestId: String,
         params: JSONObject,
         activity: Activity?,
         callback: (JSONObject) -> Unit
     ) {
-        // 参数验证
-        if (!params.has("x") || !params.has("y")) {
-            Log.w(TAG, "tap命令缺少参数: x=${params.has("x")}, y=${params.has("y")}")
-            callback(createErrorResponse("Missing x or y parameter"))
-            return
-        }
+        var x: Int? = null
+        var y: Int? = null
+        var fromIndex = false
+        val hasElementArray = params.has("element")
+        val hasIndex = params.has("index")
         
-        val x = params.getInt("x")
-        val y = params.getInt("y")
+        if (hasElementArray) {
+            val arr = params.optJSONArray("element")
+            if (arr == null || arr.length() < 2) {
+                callback(createErrorResponse("Invalid element array"))
+                return
+            }
+            x = arr.optInt(0)
+            y = arr.optInt(1)
+        } else if (hasIndex) {
+            fromIndex = true
+        } else {
+            if (!params.has("x") || !params.has("y")) {
+                Log.w(TAG, "tap命令缺少参数: x=${params.has(\"x\")}, y=${params.has(\"y\")}")
+                callback(createErrorResponse("Missing x or y parameter"))
+                return
+            }
+            x = params.getInt("x")
+            y = params.getInt("y")
+        }
         
         if (activity == null) {
             Log.w(TAG, "tap命令执行失败: Activity为空")
@@ -426,99 +465,62 @@ object CommandHandler {
             return
         }
         
-        // 在主线程执行点击
-        val tapStartTime = System.currentTimeMillis()
-        
         Handler(Looper.getMainLooper()).post {
             try {
-                // 根据页面类型分发坐标点击（dp单位）
-                ElementController.clickByCoordinateDp(activity, x.toFloat(), y.toFloat()) { success ->
-                    
+                // 动作前状态用于页面变化验证
+                val preActivity = activity
+                val preHash = PageChangeVerifier.computePreViewTreeHash(activity)
+                val preWebHash = PageChangeVerifier.computePreWebViewAggHash(activity)
+                
+                var tapX = x
+                var tapY = y
+                
+                if (fromIndex) {
+                    val elementTree = cachedElementTree
+                    if (elementTree == null) {
+                        callback(createErrorResponse("Element tree not available"))
+                        return@post
+                    }
+                    val index = params.optInt("index", 0)
+                    val targetElement = findElementByIndex(elementTree, index)
+                    if (targetElement == null) {
+                        callback(createErrorResponse("Element with index $index not found"))
+                        return@post
+                    }
+                    tapX = ((targetElement.bounds.left + targetElement.bounds.right) / 2f).toInt()
+                    tapY = ((targetElement.bounds.top + targetElement.bounds.bottom) / 2f).toInt()
+                }
+                
+                if (tapX == null || tapY == null) {
+                    callback(createErrorResponse("Tap coordinates not resolved"))
+                    return@post
+                }
+                
+                // 执行坐标点击（dp单位）
+                ElementController.clickByCoordinateDp(activity, tapX.toFloat(), tapY.toFloat()) { success ->
                     if (!success) {
                         Log.w(TAG, "tap命令执行失败: 点击操作返回false")
                         callback(createErrorResponse("Tap action failed"))
                         return@clickByCoordinateDp
                     }
                     
-                    val observerStartTime = System.currentTimeMillis()
-                    // 使用 ViewTreeObserver 监听 UI 变化
-                    val layoutChanged = AtomicBoolean(false)
-                    val layoutChangeTime = AtomicLong(0L)
-                    val activityChanged = AtomicBoolean(false)
-                    val hasReturned = AtomicBoolean(false)  // 防止重复返回
-                    val initialActivity = ActivityTracker.getCurrentActivity()
-                    
-                    // 声明 listener 变量（稍后初始化）
-                    var listener: ViewTreeObserver.OnGlobalLayoutListener? = null
-                    
-                    // 返回结果的通用方法
-                    val returnResult = {
-                        if (!hasReturned.getAndSet(true)) {
-                            try {
-                                listener?.let { activity.window?.decorView?.viewTreeObserver?.removeOnGlobalLayoutListener(it) }
-                            } catch (e: Exception) {
-                                Log.w(TAG, "移除 ViewTreeObserver 失败: ${e.message}")
-                            }
-                            
-                            // 检查 Activity 是否变化
-                            val currentActivity = ActivityTracker.getCurrentActivity()
-                            if (currentActivity != initialActivity) {
-                                activityChanged.set(true)
-                            }
-                            
-                            // 总是清理缓存
+                    // 统一使用 PageChangeVerifier 验证页面变化
+                    PageChangeVerifier.verifyActionWithPageChange(
+                        handler = Handler(Looper.getMainLooper()),
+                        getCurrentActivity = { ActivityTracker.getCurrentActivity() },
+                        preActivity = preActivity,
+                        preViewTreeHash = preHash,
+                        preWebViewAggHash = preWebHash
+                    ) { changed, changeType ->
+                        if (changed) {
                             clearCache()
-                            
-                            val hasChange = layoutChanged.get() || activityChanged.get()
-                            val changeTypes = mutableListOf<String>()
-                            if (activityChanged.get()) changeTypes.add("activity_switch")
-                            if (layoutChanged.get()) changeTypes.add("layout_change")
-                            
-                            val data = JSONObject().apply {
-                                put("ui_changed", hasChange)
-                                if (changeTypes.isNotEmpty()) {
-                                    put("change_type", changeTypes.joinToString("_and_"))
-                                }
-                            }
-                            
-                            if (!hasChange) {
-                                Log.w(TAG, "tap未检测到UI变化: ($x, $y)")
-                            }
-                            
+                            val data = JSONObject().apply { put("page_change_type", changeType) }
                             callback(createSuccessResponse(data))
+                        } else {
+                            Log.w(TAG, "tap命令执行后未检测到页面变化: ($tapX, $tapY)")
+                            callback(createErrorResponse("Tap succeeded but page unchanged"))
                         }
                     }
-                    
-                    // 初始化 listener
-                    listener = ViewTreeObserver.OnGlobalLayoutListener {
-                        if (!layoutChanged.get()) {
-                            layoutChanged.set(true)
-                            // 检测到变化后，等待 100ms 确认，然后提前返回
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                returnResult()
-                            }, 100L)
-                        }
-                    }
-                    
-                    try {
-                        activity.window?.decorView?.viewTreeObserver?.addOnGlobalLayoutListener(listener)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "添加 ViewTreeObserver 失败: ${e.message}")
-                    }
-                    
-                    // 100ms 后检查，如果没有变化则提前返回
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        if (!layoutChanged.get() && !hasReturned.get()) {
-                            returnResult()
-                        }
-                    }, 100L)
-                    
-                    // 最多等待 500ms（兜底保障）
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        if (!hasReturned.get()) {
-                            returnResult()
-                        }
-                    }, 500L)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "tap命令执行异常: ${e.message}", e)
@@ -527,211 +529,8 @@ object CommandHandler {
         }
     }
     
-    /**
-     * 处理tap_by_index命令 - 通过索引点击元素
-     */
-    private fun handleTapByIndex(
-        requestId: String,
-        params: JSONObject,
-        activity: Activity?,
-        callback: (JSONObject) -> Unit
-    ) {
-        // 参数验证
-        if (!params.has("index")) {
-            Log.w(TAG, "tap_by_index命令缺少参数: index")
-            callback(createErrorResponse("Missing index parameter"))
-            return
-        }
-        
-        val index = params.getInt("index")
-        
-        if (activity == null) {
-            Log.w(TAG, "tap_by_index命令执行失败: Activity为空")
-            callback(createErrorResponse("No active activity"))
-            return
-        }
-        
-        // 从缓存的元素树中查找目标元素
-        val targetElement = findElementByIndex(cachedElementTree, index)
-        if (targetElement == null) {
-            Log.w(TAG, "tap_by_index命令执行失败: 未找到索引为 $index 的元素")
-            callback(createErrorResponse("Element with index $index not found"))
-            return
-        }
-        
-        // 计算元素中心坐标（dp单位）
-        val centerX = (targetElement.bounds.left + targetElement.bounds.right) / 2f
-        val centerY = (targetElement.bounds.top + targetElement.bounds.bottom) / 2f
-        
-        // 在主线程执行点击
-        val tapStartTime = System.currentTimeMillis()
-        
-        Handler(Looper.getMainLooper()).post {
-            try {
-                // 检测页面类型并选择合适的点击方式
-                val pageType = try {
-                    PageSniffer.getCurrentPageType(activity)
-                } catch (e: Exception) {
-                    Log.w(TAG, "页面类型检测失败: ${e.message}")
-                    PageSniffer.PageType.UNKNOWN
-                }
-                
-                Log.d(TAG, "tap_by_index检测到页面类型: $pageType, 元素: ${targetElement.resourceId}")
-                
-                if (pageType == PageSniffer.PageType.WEB_VIEW) {
-                    // WebView页面：先尝试JavaScript点击，失败后使用坐标点击
-                    Log.d(TAG, "WebView页面，先尝试JavaScript点击元素: ${targetElement.resourceId}")
-                    
-                    // 尝试JavaScript点击
-                    ElementController.clickElement(activity, targetElement.resourceId) { jsSuccess ->
-                        Log.d(TAG, "JavaScript点击结果: $jsSuccess")
-                        
-                        if (jsSuccess) {
-                            Log.d(TAG, "JavaScript点击成功，等待UI变化验证...")
-                            // JavaScript点击成功，继续后续的UI变化检测逻辑
-                            proceedWithUIChangeDetection(activity, targetElement, index, callback, tapStartTime)
-                        } else {
-                            Log.w(TAG, "JavaScript点击失败，原因可能是:")
-                            Log.w(TAG, "  1. 元素ID '${targetElement.resourceId}' 不存在")
-                            Log.w(TAG, "  2. 元素不可见或被禁用")
-                            Log.w(TAG, "  3. 元素没有click方法")
-                            Log.w(TAG, "  4. JavaScript执行异常")
-                            Log.w(TAG, "回退到坐标点击")
-                            
-                            // JavaScript点击失败，回退到坐标点击
-                            ElementController.clickByCoordinateDp(activity, centerX, centerY) { coordSuccess ->
-                                Log.d(TAG, "坐标点击结果: $coordSuccess")
-                                
-                                if (!coordSuccess) {
-                                    Log.w(TAG, "tap_by_index命令执行失败: 坐标点击操作也返回false")
-                                    callback(createErrorResponse("Both JavaScript and coordinate tap failed"))
-                                    return@clickByCoordinateDp
-                                }
-                                
-                                Log.d(TAG, "坐标点击成功，等待UI变化验证...")
-                                // 坐标点击成功，继续后续的UI变化检测逻辑
-                                proceedWithUIChangeDetection(activity, targetElement, index, callback, tapStartTime)
-                            }
-                        }
-                    }
-                } else {
-                    // Native页面或其他：直接使用坐标点击
-                    Log.d(TAG, "Native页面，使用坐标点击")
-                    ElementController.clickByCoordinateDp(activity, centerX, centerY) { success ->
-                        Log.d(TAG, "坐标点击结果: $success")
-                        
-                        if (!success) {
-                            Log.w(TAG, "tap_by_index命令执行失败: 点击操作返回false")
-                            callback(createErrorResponse("Tap by index action failed"))
-                            return@clickByCoordinateDp
-                        }
-                        
-                        Log.d(TAG, "坐标点击成功，等待UI变化验证...")
-                        // 继续后续的UI变化检测逻辑
-                        proceedWithUIChangeDetection(activity, targetElement, index, callback, tapStartTime)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "tap_by_index命令执行异常: ${e.message}", e)
-                callback(createErrorResponse("Exception: ${e.message}"))
-            }
-        }
-    }
     
-    /**
-     * 继续进行UI变化检测的通用方法
-     */
-    private fun proceedWithUIChangeDetection(
-        activity: Activity,
-        targetElement: GenericElement,
-        index: Int,
-        callback: (JSONObject) -> Unit,
-        tapStartTime: Long
-    ) {
-        val observerStartTime = System.currentTimeMillis()
-        // 使用 ViewTreeObserver 监听 UI 变化
-        val layoutChanged = AtomicBoolean(false)
-        val layoutChangeTime = AtomicLong(0L)
-        val activityChanged = AtomicBoolean(false)
-        val hasReturned = AtomicBoolean(false)  // 防止重复返回
-        val initialActivity = ActivityTracker.getCurrentActivity()
-        
-        // 声明 listener 变量（稍后初始化）
-        var listener: ViewTreeObserver.OnGlobalLayoutListener? = null
-        
-        // 返回结果的通用方法
-        val returnResult = {
-            if (!hasReturned.getAndSet(true)) {
-                try {
-                    listener?.let { activity.window?.decorView?.viewTreeObserver?.removeOnGlobalLayoutListener(it) }
-                } catch (e: Exception) {
-                    Log.w(TAG, "移除 ViewTreeObserver 失败: ${e.message}")
-                }
-                
-                // 检查 Activity 是否变化
-                val currentActivity = ActivityTracker.getCurrentActivity()
-                if (currentActivity != initialActivity) {
-                    activityChanged.set(true)
-                }
-                
-                // 总是清理缓存
-                clearCache()
-                
-                // 构建详细的描述信息
-                val elementDesc = buildElementDescription(targetElement, index)
-                
-                val hasChange = layoutChanged.get() || activityChanged.get()
-                val changeTypes = mutableListOf<String>()
-                if (activityChanged.get()) changeTypes.add("activity_switch")
-                if (layoutChanged.get()) changeTypes.add("layout_change")
-                
-                val data = JSONObject().apply {
-                    put("message", elementDesc)
-                    put("ui_changed", hasChange)
-                    if (changeTypes.isNotEmpty()) {
-                        put("change_type", changeTypes.joinToString("_and_"))
-                    }
-                }
-                
-                if (!hasChange) {
-                    Log.w(TAG, "tap_by_index未检测到UI变化: index=$index")
-                }
-                
-                callback(createSuccessResponse(data))
-            }
-        }
-        
-        // 初始化 listener
-        listener = ViewTreeObserver.OnGlobalLayoutListener {
-            if (!layoutChanged.get()) {
-                layoutChanged.set(true)
-                // 检测到变化后，等待 100ms 确认，然后提前返回
-                Handler(Looper.getMainLooper()).postDelayed({
-                    returnResult()
-                }, 100L)
-            }
-        }
-        
-        try {
-            activity.window?.decorView?.viewTreeObserver?.addOnGlobalLayoutListener(listener)
-        } catch (e: Exception) {
-            Log.w(TAG, "添加 ViewTreeObserver 失败: ${e.message}")
-        }
-        
-        // 100ms 后检查，如果没有变化则提前返回
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (!layoutChanged.get() && !hasReturned.get()) {
-                returnResult()
-            }
-        }, 100L)
-        
-        // 最多等待 500ms（兜底保障）
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (!hasReturned.get()) {
-                returnResult()
-            }
-        }, 500L)
-    }
+    // proceedWithUIChangeDetection 已移除；统一改为 PageChangeVerifier 验证页面变化
     
     /**
      * 从元素树中查找指定稳定索引的元素
@@ -769,7 +568,35 @@ object CommandHandler {
     }
     
     /**
+     * 根据坐标查找最匹配的元素（选取包含该点且面积最小的元素）
+     */
+    private fun findElementByCoordinate(root: GenericElement?, x: Int, y: Int): GenericElement? {
+        if (root == null) return null
+        var best: GenericElement? = null
+        var bestArea = Int.MAX_VALUE
+        
+        fun traverse(e: GenericElement) {
+            val b = e.bounds
+            val contains = x >= b.left && x <= b.right && y >= b.top && y <= b.bottom
+            if (contains) {
+                val area = (b.right - b.left) * (b.bottom - b.top)
+                if (area in 1 until bestArea) {
+                    bestArea = area
+                    best = e
+                }
+            }
+            e.children.forEach { traverse(it) }
+        }
+        
+        traverse(root)
+        return best
+    }
+    
+    /**
      * 处理swipe命令 - 滑动操作
+     */
+    /**
+     * 处理swipe命令 - 滑动操作（支持 start/end 数组，兼容旧参数）
      */
     private fun handleSwipe(
         requestId: String,
@@ -777,20 +604,32 @@ object CommandHandler {
         activity: Activity?,
         callback: (JSONObject) -> Unit
     ) {
-        // 参数验证
-        val requiredParams = listOf("start_x", "start_y", "end_x", "end_y")
-        for (param in requiredParams) {
-            if (!params.has(param)) {
-                Log.w(TAG, "swipe命令缺少参数: $param")
-                callback(createErrorResponse("Missing parameter: $param"))
-                return
-            }
-        }
+        var startX: Int? = null
+        var startY: Int? = null
+        var endX: Int? = null
+        var endY: Int? = null
         
-        val startX = params.getInt("start_x")
-        val startY = params.getInt("start_y")
-        val endX = params.getInt("end_x")
-        val endY = params.getInt("end_y")
+        val startArr = params.optJSONArray("start")
+        val endArr = params.optJSONArray("end")
+        if (startArr != null && startArr.length() >= 2 && endArr != null && endArr.length() >= 2) {
+            startX = startArr.optInt(0)
+            startY = startArr.optInt(1)
+            endX = endArr.optInt(0)
+            endY = endArr.optInt(1)
+        } else {
+            val requiredParams = listOf("start_x", "start_y", "end_x", "end_y")
+            for (param in requiredParams) {
+                if (!params.has(param)) {
+                    Log.w(TAG, "swipe命令缺少参数: $param")
+                    callback(createErrorResponse("Missing parameter: $param"))
+                    return
+                }
+            }
+            startX = params.getInt("start_x")
+            startY = params.getInt("start_y")
+            endX = params.getInt("end_x")
+            endY = params.getInt("end_y")
+        }
         val duration = params.optInt("duration_ms", 300)
         
         if (activity == null) {
@@ -843,160 +682,24 @@ object CommandHandler {
             }
         }
     }
-    
-    // /**
-    //  * 处理input_text命令 - 文本输入
-    //  */
-    // private fun handleInputText(
-    //     requestId: String,
-    //     params: JSONObject,
-    //     activity: Activity?,
-    //     callback: (JSONObject) -> Unit
-    // ) {
-    //     // 参数验证
-    //     if (!params.has("text")) {
-    //         Log.w(TAG, "input_text命令缺少参数: text")
-    //         callback(createErrorResponse("Missing text parameter"))
-    //         return
-    //     }
-        
-    //     val text = params.getString("text")
-    //     Log.d(TAG, "执行input_text命令: text=\"$text\"")
-        
-    //     if (activity == null) {
-    //         Log.w(TAG, "input_text命令执行失败: Activity为空")
-    //         callback(createErrorResponse("No active activity"))
-    //         return
-    //     }
-        
-    //     Handler(Looper.getMainLooper()).post {
-    //         try {
-    //             // 动作前状态用于页面变化验证
-    //             val preActivity = activity
-    //             val preHash = PageChangeVerifier.computePreViewTreeHash(activity)
-    //             // 检查是否提供了坐标参数
-    //             if (params.has("x") && params.has("y")) {
-    //                 // 使用坐标输入（点击坐标后输入文本）
-    //                 val x = params.getInt("x")
-    //                 val y = params.getInt("y")
-    //                 Log.d(TAG, "使用坐标输入: ($x, $y)")
-                    
-    //                 NativeController.inputTextByCoordinateDp(
-    //                     activity = activity,
-    //                     inputXDp = x.toFloat(),
-    //                     inputYDp = y.toFloat(),
-    //                     inputContent = text,
-    //                     clearBeforeInput = true
-    //                 ) { success ->
-    //                     if (success) {
-    //                         // 成功后进行页面变化验证
-    //                         PageChangeVerifier.verifyActionWithPageChange(
-    //                             handler = Handler(Looper.getMainLooper()),
-    //                             getCurrentActivity = { ActivityTracker.getCurrentActivity() },
-    //                             preActivity = preActivity,
-    //                             preViewTreeHash = preHash
-    //                         ) { changed, changeType ->
-    //                             if (changed) {
-    //                                 smartClearCache("input_text")
-    //                                 Log.d(TAG, "input_text命令执行成功且检测到页面变化: 类型=$changeType")
-    //                                 val data = JSONObject().apply { put("page_change_type", changeType) }
-    //                                 callback(createSuccessResponse(data))
-    //                             } else {
-    //                                 Log.w(TAG, "input_text命令执行后未检测到页面变化")
-    //                                 callback(createErrorResponse("Input text succeeded but page unchanged"))
-    //                             }
-    //                         }
-    //                     } else {
-    //                         Log.w(TAG, "input_text命令执行失败: NativeController返回false")
-    //                         callback(createErrorResponse("Input text action failed"))
-    //                     }
-    //                 }
-    //             } else {
-    //                 // 没有坐标，尝试使用当前焦点视图或第一个EditText
-    //                 val rootView = activity.findViewById<View>(android.R.id.content)
-    //                 val focusedView = rootView.findFocus()
-                    
-    //                 if (focusedView is EditText) {
-    //                     // 如果已有焦点EditText，直接输入
-    //                     Log.d(TAG, "使用焦点EditText输入")
-    //                     focusedView.setText(text)
-    //                     // 移动光标到末尾
-    //                     focusedView.setSelection(text.length)
-    //                     // 成功后进行页面变化验证
-    //                     PageChangeVerifier.verifyActionWithPageChange(
-    //                         handler = Handler(Looper.getMainLooper()),
-    //                         getCurrentActivity = { ActivityTracker.getCurrentActivity() },
-    //                         preActivity = preActivity,
-    //                         preViewTreeHash = preHash
-    //                     ) { changed, changeType ->
-    //                         if (changed) {
-    //                             smartClearCache("input_text")
-    //                             val data = JSONObject().apply { put("page_change_type", changeType) }
-    //                             Log.d(TAG, "输入文本导致页面变化，类型: $changeType")
-    //                             callback(createSuccessResponse(data))
-    //                         } else {
-    //                             callback(createErrorResponse("输入文本操作成功但页面未变化"))
-    //                         }
-    //                     }
-    //                 } else {
-    //                     // 尝试找到第一个EditText并输入
-    //                     val editText = findFirstEditText(rootView)
-    //                     if (editText != null) {
-    //                         Log.d(TAG, "找到EditText，准备输入")
-    //                         // 点击EditText获取焦点
-    //                         editText.requestFocus()
-    //                         // 显示软键盘
-    //                         val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-    //                         imm.showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT)
-                            
-    //                         // 等待软键盘弹出后输入
-    //                         Handler(Looper.getMainLooper()).postDelayed({
-    //                             editText.setText(text)
-    //                             editText.setSelection(text.length)
-    //                             // 成功后进行页面变化验证
-    //                             PageChangeVerifier.verifyActionWithPageChange(
-    //                                 handler = Handler(Looper.getMainLooper()),
-    //                                 getCurrentActivity = { ActivityTracker.getCurrentActivity() },
-    //                                 preActivity = preActivity,
-    //                                 preViewTreeHash = preHash
-    //                             ) { changed, changeType ->
-    //                                 if (changed) {
-    //                                     smartClearCache("input_text")
-    //                                     val data = JSONObject().apply { put("page_change_type", changeType) }
-    //                                     callback(createSuccessResponse(data))
-    //                                 } else {
-    //                                     callback(createErrorResponse("Input text succeeded but page unchanged"))
-    //                                 }
-    //                             }
-    //                         }, 300)
-    //                     } else {
-    //                         Log.w(TAG, "input_text命令执行失败: 未找到输入框")
-    //                         callback(createErrorResponse("No input field found. Please provide coordinates (x, y) for input_text command."))
-    //                     }
-    //                 }
-    //             }
-    //         } catch (e: Exception) {
-    //             Log.e(TAG, "input_text命令执行异常: ${e.message}", e)
-    //             callback(createErrorResponse("Exception: ${e.message}"))
-    //         }
-    //     }
-    // }
 
 
+    /**
+     * 处理input_text/type命令 - 文本输入（支持 element 或 index）
+     */
     private fun handleInputText(
         requestId: String,
         params: JSONObject,
         activity: Activity?,
         callback: (JSONObject) -> Unit
     ) {
-        // 参数验证
         if (!params.has("text")) {
             Log.w(TAG, "input_text命令缺少参数: text")
             callback(createErrorResponse("Missing text parameter"))
             return
         }
-        
         val text = params.getString("text")
+        val hasElementArray = params.has("element")
         val index = params.optInt("index", 0)
         
         if (activity == null) {
@@ -1020,61 +723,57 @@ object CommandHandler {
                     return@post
                 }
                 
-                // 根据索引查找元素
-                val targetElement = findElementByIndex(elementTree, index)
+                // 根据元素或索引查找目标
+                val targetElement = if (hasElementArray) {
+                    val arr = params.optJSONArray("element")
+                    if (arr == null || arr.length() < 2) {
+                        callback(createErrorResponse("Invalid element array"))
+                        return@post
+                    }
+                    val x = arr.optInt(0)
+                    val y = arr.optInt(1)
+                    findElementByCoordinate(elementTree, x, y)
+                } else {
+                    findElementByIndex(elementTree, index)
+                }
                 if (targetElement == null) {
-                    Log.w(TAG, "未找到索引为 $index 的元素")
-                    callback(createErrorResponse("Element with index $index not found"))
+                    if (hasElementArray) {
+                        callback(createErrorResponse("Element at coordinate not found"))
+                    } else {
+                        Log.w(TAG, "未找到索引为 $index 的元素")
+                        callback(createErrorResponse("Element with index $index not found"))
+                    }
                     return@post
                 }
                 
                 // 使用ElementController设置输入值
                 ElementController.setInputValue(activity, targetElement.resourceId, text) { success ->
                     if (success) {
-                        // 对于input_text，优先使用内容验证而不是页面变化检测
-                        Log.d(TAG, "input_text执行成功，开始验证输入内容")
-                        verifyInputTextContent(activity, targetElement, text, 300L) { contentVerified ->
-                            if (contentVerified) {
-                                // 内容验证成功，额外等待让Accessibility Tree有时间更新
-                                Log.d(TAG, "input_text内容验证成功，等待Accessibility Tree更新")
-                                Handler(Looper.getMainLooper()).postDelayed({
-                                    smartClearCache("input_text")
-                                    Log.d(TAG, "input_text完成，Accessibility Tree应已更新")
-                                    
-                                    val elementDesc = buildInputTextDescription(targetElement, index, text)
-                                    val data = JSONObject().apply { 
-                                        put("page_change_type", "input_content_verified")
-                                        put("element_index", index)
-                                        put("message", elementDesc)
-                                        put("input_text", text)  // 返回输入的文本，让服务端知道输入成功
-                                    }
-                                    callback(createSuccessResponse(data))
-                                }, 300L)  // 额外等待300ms让Accessibility Tree更新
-                            } else {
-                                // 内容验证失败，回退到页面变化检测
-                                Log.d(TAG, "input_text内容验证失败，回退到页面变化检测")
-                                PageChangeVerifier.verifyActionWithPageChange(
-                                    handler = Handler(Looper.getMainLooper()),
-                                    getCurrentActivity = { ActivityTracker.getCurrentActivity() },
-                                    preActivity = preActivity,
-                                    preViewTreeHash = preHash,
-                                    preWebViewAggHash = preWebHash
-                                ) { changed, changeType ->
-                                    if (changed) {
-                                        smartClearCache("input_text")
-                                        
-                                        val elementDesc = buildInputTextDescription(targetElement, index, text)
-                                        val data = JSONObject().apply { 
-                                            put("page_change_type", changeType)
-                                            put("element_index", index)
-                                            put("message", elementDesc)
-                                        }
-                                        callback(createSuccessResponse(data))
-                                    } else {
-                                        Log.w(TAG, "input_text命令执行后未检测到页面变化")
-                                        callback(createErrorResponse("Input text succeeded but page unchanged"))
-                                    }
+                        // 统一使用 PageChangeVerifier 验证页面变化
+                        PageChangeVerifier.verifyActionWithPageChange(
+                            handler = Handler(Looper.getMainLooper()),
+                            getCurrentActivity = { ActivityTracker.getCurrentActivity() },
+                            preActivity = preActivity,
+                            preViewTreeHash = preHash,
+                            preWebViewAggHash = preWebHash
+                        ) { changed, changeType ->
+                            if (changed) {
+                                smartClearCache("input_text")
+                                val targetIndexFinal = if (hasElementArray) {
+                                    val stableMap = cachedStableIndexMap
+                                    stableMap?.get(targetElement) ?: targetElement.index
+                                } else index
+                                val elementDesc = buildInputTextDescription(targetElement, targetIndexFinal, text)
+                                val data = JSONObject().apply { 
+                                    put("page_change_type", changeType)
+                                    put("element_index", targetIndexFinal)
+                                    put("message", elementDesc)
+                                    put("input_text", text)
                                 }
+                                callback(createSuccessResponse(data))
+                            } else {
+                                Log.w(TAG, "input_text命令执行后未检测到页面变化")
+                                callback(createErrorResponse("Input text succeeded but page unchanged"))
                             }
                         }
                     } else {
@@ -1088,173 +787,268 @@ object CommandHandler {
             }
         }
     }
-
     
     /**
-     * 验证输入文本内容是否成功写入
-     * 通过读取目标元素的实际内容来验证输入是否生效
-     * @param activity 当前Activity
-     * @param targetElement 目标元素
-     * @param expectedText 期望的文本内容
-     * @param delayMs 验证前的延迟时间（毫秒），确保输入完成
-     * @param callback 验证结果回调
+     * 处理home命令 - 返回主页（占位）
      */
-    private fun verifyInputTextContent(
-        activity: Activity,
-        targetElement: GenericElement,
-        expectedText: String,
-        delayMs: Long = 300L,
-        callback: (Boolean) -> Unit
+    private fun handleHome(
+        requestId: String,
+        params: JSONObject,
+        activity: Activity?,
+        callback: (JSONObject) -> Unit
     ) {
-        // 延迟一小段时间确保输入操作完成
-        Handler(Looper.getMainLooper()).postDelayed({
+        callback(createErrorResponse("Home action not implemented"))
+    }
+    
+    /**
+     * 处理double tap命令 - 双击操作（支持element或index）
+     */
+    private fun handleDoubleTap(
+        requestId: String,
+        params: JSONObject,
+        activity: Activity?,
+        callback: (JSONObject) -> Unit
+    ) {
+        if (activity == null) {
+            callback(createErrorResponse("No active activity"))
+            return
+        }
+        Handler(Looper.getMainLooper()).post {
             try {
-                val pageType = PageSniffer.getCurrentPageType(activity)
-                Log.d(TAG, "验证输入内容，页面类型: $pageType, 元素ID: ${targetElement.resourceId}")
+                val preActivity = activity
+                val preHash = PageChangeVerifier.computePreViewTreeHash(activity)
+                val preWebHash = PageChangeVerifier.computePreWebViewAggHash(activity)
                 
-                when (pageType) {
-                    PageSniffer.PageType.WEB_VIEW -> {
-                        // WebView页面：通过JavaScript获取输入框的当前值
-                        val webView = findWebView(activity)
-                        if (webView != null) {
-                            val elementId = targetElement.resourceId
-                            // 尝试多种方式获取输入框的值
-                            val jsCode = """
-                                (function() {
-                                    var elem = document.getElementById('$elementId');
-                                    if (elem) {
-                                        return elem.value || elem.textContent || elem.innerText || '';
-                                    }
-                                    return '';
-                                })();
-                            """.trimIndent()
-                            
-                            webView.evaluateJavascript(jsCode) { result ->
-                                val actualValue = result?.trim('"') ?: ""
-                                val verified = actualValue == expectedText
-                                Log.d(TAG, "WebView内容验证: 期望='$expectedText', 实际='$actualValue', 结果=$verified")
-                                callback(verified)
+                var x: Int? = null
+                var y: Int? = null
+                val elementTree = cachedElementTree
+                val hasElementArray = params.has("element")
+                val hasIndex = params.has("index")
+                if (hasElementArray) {
+                    val arr = params.optJSONArray("element")
+                    if (arr == null || arr.length() < 2) {
+                        callback(createErrorResponse("Invalid element array"))
+                        return@post
+                    }
+                    x = arr.optInt(0)
+                    y = arr.optInt(1)
+                } else if (hasIndex) {
+                    if (elementTree == null) {
+                        callback(createErrorResponse("Element tree not available"))
+                        return@post
+                    }
+                    val index = params.optInt("index", 0)
+                    val targetElement = findElementByIndex(elementTree, index)
+                    if (targetElement == null) {
+                        callback(createErrorResponse("Element with index $index not found"))
+                        return@post
+                    }
+                    x = ((targetElement.bounds.left + targetElement.bounds.right) / 2f).toInt()
+                    y = ((targetElement.bounds.top + targetElement.bounds.bottom) / 2f).toInt()
+                } else {
+                    callback(createErrorResponse("Missing element or index parameter"))
+                    return@post
+                }
+                
+                ElementController.clickByCoordinateDp(activity, x!!.toFloat(), y!!.toFloat()) { first ->
+                    if (!first) {
+                        callback(createErrorResponse("First tap failed"))
+                        return@clickByCoordinateDp
+                    }
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        ElementController.clickByCoordinateDp(activity, x!!.toFloat(), y!!.toFloat()) { second ->
+                            if (!second) {
+                                callback(createErrorResponse("Second tap failed"))
+                                return@clickByCoordinateDp
                             }
-                        } else {
-                            Log.w(TAG, "未找到WebView，内容验证失败")
-                            callback(false)
+                            PageChangeVerifier.verifyActionWithPageChange(
+                                handler = Handler(Looper.getMainLooper()),
+                                getCurrentActivity = { ActivityTracker.getCurrentActivity() },
+                                preActivity = preActivity,
+                                preViewTreeHash = preHash,
+                                preWebViewAggHash = preWebHash
+                            ) { changed, changeType ->
+                                if (changed) {
+                                    clearCache()
+                                    val data = JSONObject().apply { put("page_change_type", changeType) }
+                                    callback(createSuccessResponse(data))
+                                } else {
+                                    callback(createErrorResponse("Double tap succeeded but page unchanged"))
+                                }
+                            }
                         }
+                    }, 120L)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "double tap命令执行异常: ${e.message}", e)
+                callback(createErrorResponse("Exception: ${e.message}"))
+            }
+        }
+    }
+    
+    /**
+     * 处理long press命令 - 长按操作（支持element或index）
+     */
+    private fun handleLongPress(
+        requestId: String,
+        params: JSONObject,
+        activity: Activity?,
+        callback: (JSONObject) -> Unit
+    ) {
+        if (activity == null) {
+            callback(createErrorResponse("No active activity"))
+            return
+        }
+        Handler(Looper.getMainLooper()).post {
+            try {
+                val preActivity = activity
+                val preHash = PageChangeVerifier.computePreViewTreeHash(activity)
+                val preWebHash = PageChangeVerifier.computePreWebViewAggHash(activity)
+                
+                var x: Int? = null
+                var y: Int? = null
+                val elementTree = cachedElementTree
+                val hasElementArray = params.has("element")
+                val hasIndex = params.has("index")
+                if (hasElementArray) {
+                    val arr = params.optJSONArray("element")
+                    if (arr == null || arr.length() < 2) {
+                        callback(createErrorResponse("Invalid element array"))
+                        return@post
                     }
-                    PageSniffer.PageType.NATIVE -> {
-                        // Native页面：直接读取View的文本内容
-                        val rootView = activity.findViewById<View>(android.R.id.content)
-                        val targetView = findViewByResourceName(rootView, targetElement.resourceId)
-                        
-                        if (targetView is TextView) {
-                            val actualValue = targetView.text.toString()
-                            val verified = actualValue == expectedText
-                            Log.d(TAG, "Native内容验证: 期望='$expectedText', 实际='$actualValue', 结果=$verified")
-                            callback(verified)
+                    x = arr.optInt(0)
+                    y = arr.optInt(1)
+                } else if (hasIndex) {
+                    if (elementTree == null) {
+                        callback(createErrorResponse("Element tree not available"))
+                        return@post
+                    }
+                    val index = params.optInt("index", 0)
+                    val targetElement = findElementByIndex(elementTree, index)
+                    if (targetElement == null) {
+                        callback(createErrorResponse("Element with index $index not found"))
+                        return@post
+                    }
+                    x = ((targetElement.bounds.left + targetElement.bounds.right) / 2f).toInt()
+                    y = ((targetElement.bounds.top + targetElement.bounds.bottom) / 2f).toInt()
+                } else {
+                    callback(createErrorResponse("Missing element or index parameter"))
+                    return@post
+                }
+                
+                ElementController.longClickByCoordinateDp(activity, x!!.toFloat(), y!!.toFloat()) { success ->
+                    if (!success) {
+                        callback(createErrorResponse("Long press action failed"))
+                        return@longClickByCoordinateDp
+                    }
+                    PageChangeVerifier.verifyActionWithPageChange(
+                        handler = Handler(Looper.getMainLooper()),
+                        getCurrentActivity = { ActivityTracker.getCurrentActivity() },
+                        preActivity = preActivity,
+                        preViewTreeHash = preHash,
+                        preWebViewAggHash = preWebHash
+                    ) { changed, changeType ->
+                        if (changed) {
+                            clearCache()
+                            val data = JSONObject().apply { put("page_change_type", changeType) }
+                            callback(createSuccessResponse(data))
                         } else {
-                            Log.w(TAG, "目标元素不是TextView，内容验证失败")
-                            callback(false)
+                            callback(createErrorResponse("Long press succeeded but page unchanged"))
                         }
-                    }
-                    else -> {
-                        Log.w(TAG, "未知页面类型，内容验证失败")
-                        callback(false)
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "验证输入内容时发生异常: ${e.message}", e)
-                callback(false)
+                Log.e(TAG, "long press命令执行异常: ${e.message}", e)
+                callback(createErrorResponse("Exception: ${e.message}"))
             }
-        }, delayMs)
+        }
     }
     
     /**
-     * 查找WebView
+     * 处理wait命令 - 等待一段时间（占位）
      */
-    private fun findWebView(activity: Activity): WebView? {
-        val rootView = activity.window.decorView.findViewById<View>(android.R.id.content)
-        return findWebViewRecursive(rootView)
+    private fun handleWait(
+        requestId: String,
+        params: JSONObject,
+        activity: Activity?,
+        callback: (JSONObject) -> Unit
+    ) {
+        val durationStr = params.optString("duration", "0 seconds")
+        val seconds = Regex("(\\d+)\\s*seconds").find(durationStr)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+        Handler(Looper.getMainLooper()).postDelayed({
+            val data = JSONObject().apply { put("waited_seconds", seconds) }
+            callback(createSuccessResponse(data))
+        }, (seconds * 1000L))
     }
     
     /**
-     * 递归查找WebView
+     * 处理take_over命令 - 接管（占位）
      */
-    private fun findWebViewRecursive(view: View): WebView? {
-        if (view is WebView && view.visibility == View.VISIBLE) {
-            return view
-        }
-        if (view is ViewGroup) {
-            for (i in 0 until view.childCount) {
-                val result = findWebViewRecursive(view.getChildAt(i))
-                if (result != null) {
-                    return result
-                }
-            }
-        }
-        return null
+    private fun handleTakeOver(
+        requestId: String,
+        params: JSONObject,
+        activity: Activity?,
+        callback: (JSONObject) -> Unit
+    ) {
+        val msg = params.optString("message", "")
+        val data = JSONObject().apply { put("message", msg) }
+        callback(createSuccessResponse(data))
     }
     
     /**
-     * 通过resourceId查找View
+     * 处理note命令 - 备注（占位）
      */
-    private fun findViewByResourceName(view: View, resourceName: String): View? {
-        try {
-            val resources = view.resources
-            if (resources != null) {
-                val id = resources.getIdentifier(resourceName, null, null)
-                if (id != 0) {
-                    return view.findViewById(id)
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "通过resourceName查找View失败: ${e.message}")
-        }
-        
-        // 如果通过ID查找失败，尝试递归查找
-        return findViewByResourceNameRecursive(view, resourceName)
+    private fun handleNote(
+        requestId: String,
+        params: JSONObject,
+        activity: Activity?,
+        callback: (JSONObject) -> Unit
+    ) {
+        val msg = params.optString("message", "")
+        val data = JSONObject().apply { put("message", msg) }
+        callback(createSuccessResponse(data))
     }
     
     /**
-     * 递归查找具有指定resourceName的View
+     * 处理call_api命令 - 调用API（占位）
      */
-    private fun findViewByResourceNameRecursive(view: View, resourceName: String): View? {
-        try {
-            val viewResourceName = view.resources?.getResourceEntryName(view.id)
-            if (viewResourceName == resourceName || view.id.toString() == resourceName) {
-                return view
-            }
-        } catch (e: Exception) {
-            // 忽略异常，继续查找
-        }
-        
-        if (view is ViewGroup) {
-            for (i in 0 until view.childCount) {
-                val result = findViewByResourceNameRecursive(view.getChildAt(i), resourceName)
-                if (result != null) {
-                    return result
-                }
-            }
-        }
-        return null
+    private fun handleCallApi(
+        requestId: String,
+        params: JSONObject,
+        activity: Activity?,
+        callback: (JSONObject) -> Unit
+    ) {
+        callback(createErrorResponse("Call_API not implemented"))
     }
     
     /**
-     * 查找第一个EditText视图
+     * 处理interact命令 - 交互（占位）
      */
-    private fun findFirstEditText(view: View): EditText? {
-        if (view is EditText) {
-            return view
-        }
-        if (view is android.view.ViewGroup) {
-            for (i in 0 until view.childCount) {
-                val child = view.getChildAt(i)
-                val result = findFirstEditText(child)
-                if (result != null) {
-                    return result
-                }
-            }
-        }
-        return null
+    private fun handleInteract(
+        requestId: String,
+        params: JSONObject,
+        activity: Activity?,
+        callback: (JSONObject) -> Unit
+    ) {
+        callback(createSuccessResponse())
     }
+    
+    /**
+     * 处理finish命令 - 结束（占位）
+     */
+    private fun handleFinish(
+        requestId: String,
+        params: JSONObject,
+        activity: Activity?,
+        callback: (JSONObject) -> Unit
+    ) {
+        val data = JSONObject().apply { 
+            val msg = params.optString("message", "")
+            if (msg.isNotEmpty()) put("message", msg)
+        }
+        callback(createSuccessResponse(data))
+    }
+
     
     /**
      * 处理back命令 - 返回键
@@ -1308,135 +1102,7 @@ object CommandHandler {
         }
     }
     
-    /**
-     * 处理press_key命令 - 按键操作
-     */
-    private fun handlePressKey(
-        requestId: String,
-        params: JSONObject,
-        activity: Activity?,
-        callback: (JSONObject) -> Unit
-    ) {
-        // 参数验证
-        if (!params.has("keycode")) {
-            Log.w(TAG, "press_key命令缺少参数: keycode")
-            callback(createErrorResponse("Missing keycode parameter"))
-            return
-        }
-        
-        val keycode = params.getInt("keycode")
-        
-        if (activity == null) {
-            Log.w(TAG, "press_key命令执行失败: Activity为空")
-            callback(createErrorResponse("No active activity"))
-            return
-        }
-        
-        Handler(Looper.getMainLooper()).post {
-            try {
-                val rootView = activity.findViewById<View>(android.R.id.content)
-                val downTime = SystemClock.uptimeMillis()
-                
-                // 创建按键按下事件
-                val downEvent = KeyEvent(downTime, downTime, KeyEvent.ACTION_DOWN, keycode, 0)
-                val downResult = rootView.dispatchKeyEvent(downEvent)
-                
-                // 创建按键抬起事件
-                val upEvent = KeyEvent(downTime, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keycode, 0)
-                val upResult = rootView.dispatchKeyEvent(upEvent)
-                
-                if (downResult && upResult) {
-                    // 动作前状态用于页面变化验证（按键前已计算）
-                    val preActivity = activity
-                    val preHash = PageChangeVerifier.computePreViewTreeHash(activity)
-                    // 成功后进行页面变化验证
-                    PageChangeVerifier.verifyActionWithPageChange(
-                        handler = Handler(Looper.getMainLooper()),
-                        getCurrentActivity = { ActivityTracker.getCurrentActivity() },
-                        preActivity = preActivity,
-                        preViewTreeHash = preHash,
-                        preWebViewAggHash = PageChangeVerifier.computePreWebViewAggHash(activity)
-                    ) { changed, changeType ->
-                        if (changed) {
-                            clearCache()
-                            Log.d(TAG, "press_key命令执行成功且检测到页面变化: keycode=$keycode, 类型=$changeType")
-                            val data = JSONObject().apply { put("page_change_type", changeType) }
-                            callback(createSuccessResponse(data))
-                        } else {
-                            Log.w(TAG, "press_key命令执行后未检测到页面变化")
-                            callback(createErrorResponse("Press key succeeded but page unchanged"))
-                        }
-                    }
-                } else {
-                    Log.w(TAG, "press_key命令执行失败: downResult=$downResult, upResult=$upResult")
-                    callback(createErrorResponse("Press key action failed"))
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "press_key命令执行异常: ${e.message}", e)
-                callback(createErrorResponse("Exception: ${e.message}"))
-            }
-        }
-    }
     
-    /**
-     * 处理start_app命令 - 启动应用
-     */
-    private fun handleStartApp(
-        requestId: String,
-        params: JSONObject,
-        activity: Activity?,
-        callback: (JSONObject) -> Unit
-    ) {
-        // 参数验证
-        if (!params.has("package")) {
-            Log.w(TAG, "start_app命令缺少参数: package")
-            callback(createErrorResponse("Missing package parameter"))
-            return
-        }
-        
-        val packageName = params.getString("package")
-        val activityName = params.optString("activity", null)
-        
-        if (activity == null) {
-            Log.w(TAG, "start_app命令执行失败: Activity为空")
-            callback(createErrorResponse("No active activity"))
-            return
-        }
-        
-        Handler(Looper.getMainLooper()).post {
-            try {
-                val intent = if (activityName != null && activityName.isNotEmpty()) {
-                    // 启动指定Activity
-                    Log.d(TAG, "启动指定Activity: $packageName/$activityName")
-                    Intent().apply {
-                        setClassName(packageName, activityName)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                } else {
-                    // 启动应用主Activity
-                    val pm = activity.packageManager
-                    val launchIntent = pm.getLaunchIntentForPackage(packageName)
-                    if (launchIntent != null) {
-                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        launchIntent
-                    } else {
-                        Log.w(TAG, "start_app命令执行失败: 无法找到启动Intent, package=$packageName")
-                        callback(createErrorResponse("Cannot find launch intent for package: $packageName"))
-                        return@post
-                    }
-                }
-                
-                activity.startActivity(intent)
-                // UI操作后清理缓存，因为页面可能已变化
-                clearCache()
-                Log.d(TAG, "start_app命令执行成功: package=$packageName")
-                callback(createSuccessResponse())
-            } catch (e: Exception) {
-                Log.e(TAG, "start_app命令执行异常: ${e.message}", e)
-                callback(createErrorResponse("Exception: ${e.message}"))
-            }
-        }
-    }
     
     /**
      * 异步截图功能（避免阻塞主线程）

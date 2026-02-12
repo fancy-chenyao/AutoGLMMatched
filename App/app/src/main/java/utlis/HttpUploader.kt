@@ -1,5 +1,6 @@
-package Agent
+package utlis
 
+import Agent.MobileGPTGlobal
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
@@ -29,6 +30,13 @@ object HttpUploader {
             .build()
     }
     
+    /**
+     * 获取并缓存设备唯一ID
+     * - 优先从 SharedPreferences 读取；
+     * - 若不存在则生成 UUID 并写入缓存。
+     * @param ctx 上下文
+     * @return 设备唯一ID
+     */
     private fun getDeviceId(ctx: Context): String {
         val sp = ctx.getSharedPreferences("mobilegpt_prefs", Context.MODE_PRIVATE)
         var id = sp.getString(MobileGPTGlobal.DEVICE_ID_KEY, null)
@@ -39,6 +47,13 @@ object HttpUploader {
         return id
     }
     
+    /**
+     * 将 Bitmap 压缩为 JPEG 文件并写入缓存目录
+     * @param context 上下文
+     * @param bitmap 位图
+     * @param quality JPEG 压缩质量（0-100）
+     * @return 生成的临时文件
+     */
     private fun bitmapToJpegFile(context: Context, bitmap: Bitmap, quality: Int = 80): File {
         val cacheDir = File(context.cacheDir, "uploads")
         if (!cacheDir.exists()) cacheDir.mkdirs()
@@ -50,6 +65,15 @@ object HttpUploader {
         return file
     }
     
+    /**
+     * 上传 Bitmap 截图（multipart/form-data）
+     * - 以 image/jpeg 方式上传；
+     * - 携带 device_id 与 request_id 字段；
+     * @param context 上下文
+     * @param bitmap 位图
+     * @param requestId 请求ID用于服务端归档
+     * @return 成功返回服务端 JSON 响应；失败返回 null
+     */
     fun uploadBitmap(context: Context, bitmap: Bitmap, requestId: String): JSONObject? {
         val deviceId = getDeviceId(context)
         val url = MobileGPTGlobal.uploadBaseUrl()
@@ -86,6 +110,16 @@ object HttpUploader {
         }
     }
     
+    /**
+     * 上传 JSON 文件（multipart/form-data）
+     * - 以 application/json 方式上传；
+     * - 文件名可通过 filenameHint 指定前缀；
+     * @param context 上下文
+     * @param json JSON 字符串内容
+     * @param requestId 请求ID用于服务端归档
+     * @param filenameHint 用于临时文件名的前缀（默认 a11y.json）
+     * @return 成功返回服务端 JSON 响应；失败返回 null
+     */
     fun uploadJson(context: Context, json: String, requestId: String, filenameHint: String = "a11y.json"): JSONObject? {
         val deviceId = getDeviceId(context)
         val url = MobileGPTGlobal.uploadBaseUrl()
@@ -125,5 +159,3 @@ object HttpUploader {
         }
     }
 }
-
-
