@@ -30,7 +30,6 @@ from droidrun.agent.codeact.prompts import (
 )
 from droidrun.agent.context.episodic_memory import EpisodicMemory, EpisodicMemoryStep
 from droidrun.tools import Tools
-from droidrun.tools.adb import AdbTools
 from droidrun.agent.context.agent_persona import AgentPersona
 
 logger = logging.getLogger("droidrun")
@@ -64,6 +63,7 @@ class CodeActAgentMicro(Workflow):
 
         self.llm = llm
         self.max_steps = max_steps
+        self.persona = persona
 
         self.user_prompt = persona.user_prompt
         self.no_thoughts_prompt = None
@@ -197,12 +197,12 @@ class CodeActAgentMicro(Workflow):
                 logger.info(f"✅ [Micro] UI state obtained for step {self.steps_counter}, found {element_count} elements")
                 await ctx.store.set("ui_state", a11y_tree)
                 ctx.write_event_to_stream(RecordUIStateEvent(ui_state=a11y_tree))
-                chat_history = await chat_utils.add_ui_text_block(a11y_tree, chat_history)
+                chat_history = await chat_utils.add_ui_text_block(a11y_tree, chat_history, persona_name=self.persona.name)
             else:
                 logger.warning("⚠️ [Micro] UI 状态为空")
                 
             if phone_state:
-                chat_history = await chat_utils.add_phone_state_block(phone_state, chat_history)
+                chat_history = await chat_utils.add_phone_state_block(phone_state, chat_history, persona_name=self.persona.name)
         except Exception as e:
             logger.warning(f"⚠️ Error processing ui_state/phone_state from get_state_async response: {e}")
 
@@ -404,7 +404,7 @@ class CodeActAgentMicro(Workflow):
         
         # Best-effort resource cleanup
         try:
-            if hasattr(self, "tools") and isinstance(self.tools, AdbTools):
+            if hasattr(self, "tools") and hasattr(self.tools, 'teardown_tcp_forward'):
                 self.tools.teardown_tcp_forward()
         except Exception:
             pass

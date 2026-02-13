@@ -103,14 +103,23 @@ def _format_ui_elements(ui_data, level=0) -> str:
     
     return "\n".join(formatted_lines)
 
-async def add_ui_text_block(ui_state: str, chat_history: List[ChatMessage], copy = True) -> List[ChatMessage]:
+async def add_ui_text_block(ui_state: str, chat_history: List[ChatMessage], persona_name: str = "", copy = True) -> List[ChatMessage]:
     """Add UI elements to the chat history without modifying the original."""
     if ui_state:
-        # Parse the JSON and format it in natural language
+        # If using AutoGLM-Phone persona, we might want to skip or simplify UI tree
+        # based on Open-AutoGLM's behavior (which is purely vision-based).
+        # However, keeping it doesn't hurt as long as the prompt is clear.
+        # For now, let's keep it but make it optional or formatted differently if needed.
+        
         try:
             ui_data = json.loads(ui_state) if isinstance(ui_state, str) else ui_state
             formatted_ui = _format_ui_elements(ui_data)
-            ui_block = TextBlock(text=f"""
+            
+            # If AutoGLM-Phone, use a more concise header
+            if persona_name == "AutoGLM-Phone":
+                text = f"** UI Elements **\n\n{formatted_ui}"
+            else:
+                text = f"""
 Current UI elements from the device in the schema 'index. className: resourceId, text, clickable=true/false - bounds(x1,y1,x2,y2)':
 
 Important Notes:
@@ -119,9 +128,9 @@ Important Notes:
 
 Elements:
 {formatted_ui}
-""")
+"""
+            ui_block = TextBlock(text=text)
         except (json.JSONDecodeError, TypeError):
-            # Fallback to original format if parsing fails
             ui_block = TextBlock(text="\nCurrent Clickable UI elements from the device using the custom TopViewService:\n```json\n" + json.dumps(ui_state) + "\n```\n")
         
         if copy:
@@ -140,7 +149,7 @@ async def add_screenshot_image_block(screenshot, chat_history: List[ChatMessage]
     return chat_history
 
 
-async def add_phone_state_block(phone_state, chat_history: List[ChatMessage]) -> List[ChatMessage]:
+async def add_phone_state_block(phone_state, chat_history: List[ChatMessage], persona_name: str = "") -> List[ChatMessage]:
     
     # Format the phone state data nicely
     if isinstance(phone_state, dict) and 'error' not in phone_state:
@@ -149,20 +158,26 @@ async def add_phone_state_block(phone_state, chat_history: List[ChatMessage]) ->
         keyboard_visible = phone_state.get('keyboardVisible', False)
         focused_element = phone_state.get('focusedElement')
         
-        # Format the focused element
-        if focused_element:
-            element_text = focused_element.get('text', '')
-            element_class = focused_element.get('className', '')
-            element_resource_id = focused_element.get('resourceId', '')
-            
-            # Build focused element description
-            focused_desc = f"'{element_text}' {element_class}"
-            if element_resource_id:
-                focused_desc += f" | ID: {element_resource_id}"
+        # If AutoGLM-Phone persona, match Open-AutoGLM's Screen Info format: {"current_app": "..."}
+        if persona_name == "AutoGLM-Phone":
+            screen_info = {"current_app": current_app}
+            # Open-AutoGLM uses "** Screen Info **\n\nJSON"
+            phone_state_text = f"** Screen Info **\n\n{json.dumps(screen_info, ensure_ascii=False)}"
         else:
-            focused_desc = "None"
-        
-        phone_state_text = f"""
+            # Format the focused element
+            if focused_element:
+                element_text = focused_element.get('text', '')
+                element_class = focused_element.get('className', '')
+                element_resource_id = focused_element.get('resourceId', '')
+                
+                # Build focused element description
+                focused_desc = f"'{element_text}' {element_class}"
+                if element_resource_id:
+                    focused_desc += f" | ID: {element_resource_id}"
+            else:
+                focused_desc = "None"
+            
+            phone_state_text = f"""
 **Current Phone State:**
 • **App:** {current_app} ({package_name})
 • **Keyboard:** {'Visible' if keyboard_visible else 'Hidden'}
@@ -286,13 +301,62 @@ def parse_persona_description(personas) -> str:
 
 def extract_code_and_thought(response_text: str) -> Tuple[Optional[str], str]:
     """
-    Extracts code from Markdown blocks (```python ... ```) and the surrounding text (thought),
-    handling indented code blocks.
-
+    Extracts code and thought from response.
+    Supports:
+    1. Markdown blocks (```python ... ```)
+    2. AutoGLM style <think>...</think> and <answer>...</answer>
+    3. autoglm-phone-9b style <[PLHD20...]>...</[PLHD21...]> and <[PLHD41...]>...</[PLHD21...]>
+    
     Returns:
         Tuple[Optional[code_string], thought_string]
     """
     logger.debug("✂️ Extracting code and thought from response...")
+    
+    # 1. 尝试解析 autoglm-phone-9b 风格 (PLHD tokens)
+    think_match = re.search(r"<\[PLHD20_never_used_51bce0c785ca2f68081bfa7d91973934\]>(.*?)<\[PLHD21_never_used_51bce0c785ca2f68081bfa7d91973934\]>", response_text, re.DOTALL)
+    answer_match = re.search(r"<\[PLHD41_never_used_51bce0c785ca2f68081bfa7d91973934\]>(.*?)<\[PLHD21_never_used_51bce0c785ca2f68081bfa7d91973934\]>", response_text, re.DOTALL)
+    
+    if think_match or answer_match:
+        thoughts = think_match.group(1).strip() if think_match else ""
+        answer = answer_match.group(1).strip() if answer_match else ""
+        
+        # 如果 answer 包含 do(...) 格式，尝试将其转换为 python 代码
+        if answer.startswith("do(") or answer.startswith("finish("):
+            python_code = _convert_autoglm_action_to_python(answer)
+            return python_code, thoughts
+        
+        # 如果 answer 已经是 python 代码块
+        code_pattern = r"```python\s*\n(.*?)\n```"
+        code_match = re.search(code_pattern, answer, re.DOTALL)
+        if code_match:
+            return code_match.group(1).strip(), thoughts
+            
+        return answer, thoughts
+
+    # 2. 尝试解析 <think> 和 <answer> (通用 AutoGLM 风格)
+    think_match = re.search(r"<think>(.*?)</think>", response_text, re.DOTALL)
+    answer_match = re.search(r"<answer>(.*?)</answer>", response_text, re.DOTALL)
+    
+    if think_match or answer_match:
+        thoughts = think_match.group(1).strip() if think_match else ""
+        answer = answer_match.group(1).strip() if answer_match else ""
+        
+        # 如果 answer 包含 do(...) 格式，尝试将其转换为 python 代码
+        if answer.startswith("do(") or answer.startswith("finish("):
+            # 简单的转换逻辑：do(action="Tap", element=[x,y]) -> tap(x, y)
+            # 这里可以根据需要扩展更复杂的转换
+            python_code = _convert_autoglm_action_to_python(answer)
+            return python_code, thoughts
+        
+        # 如果 answer 已经是 python 代码块
+        code_pattern = r"```python\s*\n(.*?)\n```"
+        code_match = re.search(code_pattern, answer, re.DOTALL)
+        if code_match:
+            return code_match.group(1).strip(), thoughts
+            
+        return answer, thoughts
+
+    # 2. 原有的 Markdown 解析逻辑
     code_pattern = r"^\s*```python\s*\n(.*?)\n^\s*```\s*?$"
     code_matches = list(re.finditer(code_pattern, response_text, re.DOTALL | re.MULTILINE))
 
@@ -300,24 +364,81 @@ def extract_code_and_thought(response_text: str) -> Tuple[Optional[str], str]:
         logger.debug("  - No code block found. Entire response is thought.")
         return None, response_text.strip()
 
-    extracted_code_parts = []
-    for match in code_matches:
-            code_content = match.group(1)
-            extracted_code_parts.append(code_content)
+    code = "\n".join(match.group(1).strip() for match in code_matches)
+    
+    # Remove the code blocks from the original text to get the thought
+    thought = re.sub(code_pattern, "", response_text, flags=re.DOTALL | re.MULTILINE).strip()
+    
+    return code, thought
 
-    extracted_code = "\n\n".join(extracted_code_parts)
-
-
-    thought_parts = []
-    last_end = 0
-    for match in code_matches:
-        start, end = match.span(0)
-        thought_parts.append(response_text[last_end:start])
-        last_end = end
-    thought_parts.append(response_text[last_end:])
-
-    thought_text = "".join(thought_parts).strip()
-    thought_preview = (thought_text[:100] + '...') if len(thought_text) > 100 else thought_text
-    logger.debug(f"  - Extracted thought: {thought_preview}")
-
-    return extracted_code, thought_text
+def _convert_autoglm_action_to_python(action_str: str) -> str:
+    """将 AutoGLM 的 do(action=...) 格式转换为 Python 代码"""
+    # 示例: do(action="Tap", element=[500,500]) -> tap(element=[500,500])
+    # 示例: finish(message="done") -> complete(success=True, reason="done")
+    
+    if action_str.startswith("finish("):
+        msg_match = re.search(r'message=["\'](.*?)["\']', action_str)
+        msg = msg_match.group(1) if msg_match else "Task completed"
+        return f'complete(success=True, reason="{msg}")'
+        
+    if action_str.startswith("do("):
+        action_match = re.search(r'action=["\'](.*?)["\']', action_str)
+        if not action_match:
+            return action_str
+            
+        action = action_match.group(1).lower()
+        
+        if action == "tap":
+            coord_match = re.search(r'element=\[(.*?)\]', action_str)
+            msg_match = re.search(r'message=["\'](.*?)["\']', action_str)
+            if coord_match:
+                result = f"tap(element=[{coord_match.group(1)}])"
+                if msg_match:
+                    logger.info(f"AutoGLM important action message: {msg_match.group(1)}")
+                return result
+        elif action == "type" or action == "type_name":
+            text_match = re.search(r'text=["\'](.*?)["\']', action_str)
+            if text_match:
+                return f'input_text("{text_match.group(1)}")'
+        elif action == "swipe":
+            start_match = re.search(r'start=\[(.*?)\]', action_str)
+            end_match = re.search(r'end=\[(.*?)\]', action_str)
+            if start_match and end_match:
+                return f"swipe(start=[{start_match.group(1)}], end=[{end_match.group(1)}])"
+        elif action == "back":
+            return "back()"
+        elif action == "home":
+            return "home()"
+        elif action == "launch":
+            app_match = re.search(r'app=["\'](.*?)["\']', action_str)
+            if app_match:
+                return f'start_app("{app_match.group(1)}")'
+        elif action == "wait":
+            duration_match = re.search(r'duration=["\'](\d+).*?["\']', action_str)
+            if duration_match:
+                return f'wait("{duration_match.group(1)} seconds")'
+            return 'wait("2 seconds")'
+        elif action == "double tap":
+            coord_match = re.search(r'element=\[(.*?)\]', action_str)
+            if coord_match:
+                return f"double_tap(element=[{coord_match.group(1)}])"
+        elif action == "long press":
+            coord_match = re.search(r'element=\[(.*?)\]', action_str)
+            if coord_match:
+                return f"long_press(element=[{coord_match.group(1)}])"
+        elif action == "take_over":
+            msg_match = re.search(r'message=["\'](.*?)["\']', action_str)
+            msg = msg_match.group(1) if msg_match else "Need user assistance"
+            return f'take_over(message="{msg}")'
+        elif action == "interact":
+            return 'interact()'
+        elif action == "note":
+            msg_match = re.search(r'message=["\'](.*?)["\']', action_str)
+            msg = msg_match.group(1) if msg_match else ""
+            return f'note(message="{msg}")'
+        elif action == "call_api":
+            inst_match = re.search(r'instruction=["\'](.*?)["\']', action_str)
+            inst = inst_match.group(1) if inst_match else ""
+            return f'call_api(instruction="{inst}")'
+                
+    return action_str

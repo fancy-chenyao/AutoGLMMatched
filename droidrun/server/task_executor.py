@@ -103,12 +103,21 @@ class TaskExecutor:
             debug = task_options.get("debug") if "debug" in task_options else self.config_manager.get("system.debug", False)
             save_trajectory = task_options.get("save_trajectory") or self.config_manager.get("agent.save_trajectories", "none")
             
-            # 5. 创建 DroidAgent
+            # 5. 选择合适的 Persona
+            from droidrun.agent.context.personas import DEFAULT, AUTOGLM_PHONE
+            
+            selected_personas = [DEFAULT]
+            if "autoglm-phone" in api_config.model.lower():
+                selected_personas = [AUTOGLM_PHONE]
+                LoggingUtils.log_info("TaskExecutor", "Detected AutoGLM model, using AUTOGLM_PHONE persona")
+            
+            # 6. 创建 DroidAgent
             try:
                 agent = DroidAgent(
                     goal=goal,
                     llm=llm,
                     tools=tools,
+                    personas=selected_personas,
                     config_manager=self.config_manager,
                     max_steps=max_steps,
                     vision=vision,

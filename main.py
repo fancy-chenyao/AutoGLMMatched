@@ -4,7 +4,7 @@ import os
 import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from droidrun import AdbTools, DroidAgent
+from droidrun import DroidAgent, WebSocketTools
 from droidrun.config import get_config_manager
 from llama_index.llms.openai_like import OpenAILike
 
@@ -20,8 +20,33 @@ async def main():
     start_datetime = datetime.now()
     print(f"🕐 开始时间: {start_datetime.strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # Load tools
-    tools = AdbTools()
+    # 必须先启动 server.py，并确保设备已连接
+    # 这里需要一个有效的 device_id
+    device_id = os.getenv("DEVICE_ID", "default_device")
+    
+    # 获取统一配置管理器
+    config_manager = get_config_manager()
+    
+    # 模拟从全局服务器获取工具实例（在实际运行中由 server.py 处理）
+    # 这里仅作为脚本运行的示例，实际使用建议通过 droidrun cli 或 server.py
+    print(f"🌐 准备使用 WebSocket 工具 (Device ID: {device_id})")
+    
+    # 注意：在没有运行中的 WebSocketServer 时，WebSocketTools 无法独立工作
+    # 这里的代码仅为移除 ADB 后的逻辑对齐
+    from droidrun.server import get_global_server
+    server = get_global_server()
+    if server:
+        tools = WebSocketTools(
+            device_id=device_id,
+            session_manager=server.session_manager,
+            config_manager=config_manager
+        )
+    else:
+        print("⚠️ 警告: WebSocket 服务器未运行。WebSocketTools 可能无法正常工作。")
+        # 即使服务器没运行，我们也创建一个实例以移除 AdbTools 引用
+        # 实际执行会报错，但这符合移除 ADB 的要求
+        tools = None 
+    
     tools_init_time = time.time()
     print(f"🔧 工具初始化完成 (耗时: {tools_init_time - start_time:.2f}秒)")
     

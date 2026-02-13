@@ -24,7 +24,6 @@ from droidrun.tools import Tools
 from droidrun.agent.common.constants import LLM_HISTORY_LIMIT
 from droidrun.agent.common.events import RecordUIStateEvent, ScreenshotEvent
 from droidrun.agent.context.agent_persona import AgentPersona
-from droidrun.tools.adb import AdbTools
 from droidrun.agent.context.reflection import Reflection
 
 from dotenv import load_dotenv
@@ -253,15 +252,6 @@ wrap your code inside this:
         """Finalize the workflow."""
         await ctx.store.set("chat_memory", self.chat_memory)
 
-        # Best-effort resource cleanup
-        try:
-            if hasattr(self, "tools_instance") and isinstance(self.tools_instance, AdbTools):
-                # Ensure any TCP forwardings are removed
-                self.tools_instance.teardown_tcp_forward()
-        except Exception:
-            # Cleanup errors should not break finalize
-            pass
-
         result = {"tasks": ev.tasks}
         return StopEvent(result=result)
 
@@ -299,8 +289,16 @@ wrap your code inside this:
             if reflection:
                 chat_history = await chat_utils.add_reflection_summary(reflection, chat_history)
 
-            chat_history = await chat_utils.add_phone_state_block(await ctx.store.get("phone_state"), chat_history)
-            chat_history = await chat_utils.add_ui_text_block(await ctx.store.get("ui_state"), chat_history)
+            # Check if we have an AutoGLM persona
+            persona_name = ""
+            if self.personas:
+                for p in self.personas:
+                    if p.name == "AutoGLM-Phone":
+                        persona_name = "AutoGLM-Phone"
+                        break
+
+            chat_history = await chat_utils.add_phone_state_block(await ctx.store.get("phone_state"), chat_history, persona_name=persona_name)
+            chat_history = await chat_utils.add_ui_text_block(await ctx.store.get("ui_state"), chat_history, persona_name=persona_name)
 
             limited_history = self._limit_history(chat_history)
             messages_to_send = [self.system_message] + limited_history

@@ -77,7 +77,6 @@ from droidrun.telemetry import (
     flush,
 )
 from droidrun.tools import Tools, describe_tools
-from droidrun.tools.adb import AdbTools
 
 logger = logging.getLogger("droidrun")
 
@@ -108,7 +107,6 @@ class DroidAgent(Workflow):
             logger.propagate = False
         
         if not debug:
-            logging.getLogger("droidrun.tools.adb").setLevel(logging.INFO)
             logging.getLogger("droidrun.agent.codeact").setLevel(logging.INFO)
             logging.getLogger("droidrun.agent.planner").setLevel(logging.INFO)
             logging.getLogger("droidrun.agent.utils").setLevel(logging.INFO)
@@ -1002,7 +1000,7 @@ class DroidAgent(Workflow):
         # Best-effort resource cleanup hooks (e.g., device TCP forwards)
         try:
             tools = getattr(self, "tools", None)
-            if tools and isinstance(tools, AdbTools):
+            if tools and hasattr(tools, 'teardown_tcp_forward'):
                 tools.teardown_tcp_forward()
         except Exception:
             pass

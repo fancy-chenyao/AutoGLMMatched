@@ -30,7 +30,6 @@ from droidrun.agent.codeact.prompts import (
 )
 from droidrun.agent.context.episodic_memory import EpisodicMemory, EpisodicMemoryStep
 from droidrun.tools import Tools
-from droidrun.tools.adb import AdbTools
 from droidrun.agent.context.agent_persona import AgentPersona
 from droidrun.agent.utils.logging_utils import LoggingUtils
 
@@ -62,6 +61,7 @@ class CodeActAgent(Workflow):
 
         self.llm = llm
         self.max_steps = max_steps
+        self.persona = persona
 
         self.user_prompt = persona.user_prompt
         self.no_thoughts_prompt = None
@@ -197,12 +197,12 @@ class CodeActAgent(Workflow):
                 logger.info(f"✅ a11y_tree 已获取，包含 {element_count} 个顶层元素")
                 await ctx.store.set("ui_state", a11y_tree)
                 ctx.write_event_to_stream(RecordUIStateEvent(ui_state=a11y_tree))
-                chat_history = await chat_utils.add_ui_text_block(a11y_tree, chat_history)
+                chat_history = await chat_utils.add_ui_text_block(a11y_tree, chat_history, persona_name=self.persona.name)
             else:
                 logger.warning("⚠️ a11y_tree 为空或不存在！大模型将无法看到 UI 元素")
                 
             if phone_state:
-                chat_history = await chat_utils.add_phone_state_block(phone_state, chat_history)
+                chat_history = await chat_utils.add_phone_state_block(phone_state, chat_history, persona_name=self.persona.name)
         except Exception as e:
             logger.warning(f"⚠️ Error processing ui_state/phone_state from get_state_async response: {e}")
 
@@ -374,7 +374,7 @@ class CodeActAgent(Workflow):
         
         # Best-effort resource cleanup
         try:
-            if hasattr(self, "tools") and isinstance(self.tools, AdbTools):
+            if hasattr(self, "tools") and hasattr(self.tools, 'teardown_tcp_forward'):
                 self.tools.teardown_tcp_forward()
         except Exception:
             pass

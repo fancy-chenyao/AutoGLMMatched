@@ -95,9 +95,59 @@ class Tools(ABC):
         """
         pass
 
-    #@abstractmethod
-    #async def tap_by_coordinates(self, x: int, y: int) -> bool:
-    #    pass
+    async def tap(self, element: Optional[List[int]] = None, index: Optional[int] = None) -> str:
+        """
+        Tap at coordinates or by element index.
+        """
+        raise NotImplementedError()
+
+    async def double_tap(self, element: Optional[List[int]] = None, index: Optional[int] = None) -> str:
+        """
+        Double tap at coordinates or by element index.
+        """
+        raise NotImplementedError()
+
+    async def long_press(self, element: Optional[List[int]] = None, index: Optional[int] = None, duration_ms: int = 1000) -> str:
+        """
+        Long press at coordinates or by element index.
+        """
+        raise NotImplementedError()
+
+    async def home(self) -> str:
+        """
+        Press the home button.
+        """
+        raise NotImplementedError()
+
+    async def wait(self, duration: str) -> str:
+        """
+        Wait for a specified duration.
+        """
+        raise NotImplementedError()
+
+    async def take_over(self, message: str) -> str:
+        """
+        Request user take over.
+        """
+        raise NotImplementedError()
+
+    async def note(self, message: str) -> str:
+        """
+        Record a note.
+        """
+        raise NotImplementedError()
+
+    async def call_api(self, instruction: str) -> str:
+        """
+        Call an external API or perform a complex instruction.
+        """
+        raise NotImplementedError()
+
+    async def interact(self) -> str:
+        """
+        Request user interaction for choices.
+        """
+        raise NotImplementedError()
 
     @abstractmethod
     async def swipe(

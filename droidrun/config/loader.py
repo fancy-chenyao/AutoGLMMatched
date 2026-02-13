@@ -19,6 +19,11 @@ class ConfigLoader:
             'ALIYUN_MODEL': 'api.model',
             'ALIYUN_API_BASE': 'api.api_base',
             
+            # Base Model 配置 (支持 autoglm-phone-9b 等本地模型)
+            'BASE_API_KEY': 'api.api_key',
+            'BASE_MODEL': 'api.model',
+            'BASE_API_BASE': 'api.api_base',
+            
             # 记忆系统配置
             'MEMORY_SIMILARITY_THRESHOLD': 'memory.similarity_threshold',
             'MEMORY_STORAGE_DIR': 'memory.storage_dir',

@@ -12,7 +12,6 @@ import time
 import os
 from typing import Dict, List, Any, Optional
 from droidrun.agent.utils.logging_utils import LoggingUtils
-from droidrun.tools.adb import AdbTools
 from droidrun.agent.utils.trajectory import Trajectory
 
 logger = logging.getLogger("droidrun-macro")
@@ -23,27 +22,27 @@ class MacroPlayer:
     A class for loading and replaying DroidRun macro sequences.
 
     This player can execute recorded UI actions (taps, swipes, text input, key presses)
-    on Android devices using AdbTools.
+    on Android devices.
     """
 
-    def __init__(self, device_serial: str = None, delay_between_actions: float = 1.0):
+    def __init__(self, device_serial: str = None, delay_between_actions: float = 1.0, tools=None):
         """
         Initialize the MacroPlayer.
 
         Args:
-            device_serial: Serial number of the target device. If None, will use first available device.
+            device_serial: Serial number of the target device.
             delay_between_actions: Delay in seconds between each action (default: 1.0s)
+            tools: Tools instance to use for replay (e.g., WebSocketTools)
         """
         self.device_serial = device_serial
         self.delay_between_actions = delay_between_actions
-        self.adb_tools = None
+        self.tools = tools
 
-    def _initialize_tools(self) -> AdbTools:
-        """Initialize ADB tools for the target device."""
-        if self.adb_tools is None:
-            self.adb_tools = AdbTools(serial=self.device_serial)
-            LoggingUtils.log_info("MacroReplay", "Initialized ADB tools for device: {serial}", serial=self.device_serial)
-        return self.adb_tools
+    def _initialize_tools(self):
+        """Get the tools for the target device."""
+        if self.tools is None:
+            raise ValueError("Tools instance must be provided to MacroPlayer for replay.")
+        return self.tools
 
     def load_macro_from_file(self, macro_file_path: str) -> Dict[str, Any]:
         """

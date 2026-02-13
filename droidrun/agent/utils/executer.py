@@ -8,7 +8,6 @@ from llama_index.core.workflow import Context
 import asyncio
 from asyncio import AbstractEventLoop
 import threading
-from droidrun.tools.adb import AdbTools
 from droidrun.tools.websocket_tools import WebSocketTools
 
 logger = logging.getLogger("droidrun")
@@ -40,8 +39,8 @@ class SimpleCodeExecutor:
             locals: Local variables to use in the execution context
             globals: Global variables to use in the execution context
             tools: List of tools available for execution
-            tools_instance: Original tools instance (e.g., AdbTools instance)
-        """
+        tools_instance: Original tools instance (e.g., WebSocketTools instance)
+    """
 
         self.tools_instance = tools_instance
 
@@ -204,7 +203,7 @@ class SimpleCodeExecutor:
         
         # 为工具实例设置上下文，用于事件流记录
         if self.tools_instance:
-            if isinstance(self.tools_instance, (AdbTools, WebSocketTools)):
+            if isinstance(self.tools_instance, (WebSocketTools,)):
                 self.tools_instance._set_context(ctx)
                 # 传递动作注释信息（合并而不是覆盖，避免丢失热启动预加载的注释）
                 if hasattr(self.tools_instance, '_action_comments') and self.tools_instance._action_comments:

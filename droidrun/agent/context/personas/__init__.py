@@ -3,6 +3,7 @@ from .ui_expert import UI_EXPERT
 from .app_starter import APP_STARTER_EXPERT
 from .big_agent import BIG_AGENT
 from .micro_cold_start import MICRO_COLD_START
+from .autoglm_phone_persona import AUTOGLM_PHONE
 
 __all__ = [
     'DEFAULT',
@@ -10,4 +11,5 @@ __all__ = [
     'APP_STARTER_EXPERT',
     'BIG_AGENT',
     'MICRO_COLD_START',
+    'AUTOGLM_PHONE',
     ]

@@ -6,7 +6,7 @@ __version__ = "0.3.0"
 
 # Import main classes for easier access
 from droidrun.agent.utils.llm_picker import load_llm
-from droidrun.tools import Tools, AdbTools, IOSTools
+from droidrun.tools import Tools, IOSTools, WebSocketTools
 from droidrun.agent.droid import DroidAgent
 
 # Import macro functionality
@@ -18,8 +18,8 @@ __all__ = [
     "DroidAgent",
     "load_llm",
     "Tools",
-    "AdbTools",
     "IOSTools",
+    "WebSocketTools",
     "MacroPlayer",
     "replay_macro_file",
     "replay_macro_folder",

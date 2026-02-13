@@ -11,7 +11,6 @@ from rich.console import Console
 from rich.table import Table
 from droidrun.macro.replay import MacroPlayer, replay_macro_file, replay_macro_folder
 from droidrun.agent.utils.trajectory import Trajectory
-from adbutils import adb
 
 console = Console()
 
@@ -62,12 +61,7 @@ def replay(path: str, device: Optional[str], delay: float, start_from: int, max_
     start_from_zero = max(0, start_from - 1)
     
     if device is None:
-        logger.info("🔍 Finding connected device...")
-        devices = adb.list()
-        if not devices:
-            raise ValueError("No connected devices found.")
-        device = devices[0].serial
-        logger.info(f"📱 Using device: {device}")
+        raise ValueError("Device ID not specified. Please specify the device ID via --device")
     else:
         logger.info(f"📱 Using device: {device}")
     
