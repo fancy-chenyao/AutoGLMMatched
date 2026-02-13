@@ -280,38 +280,61 @@ object NativeController {
      * @param y 长按的Y坐标（px单位）
      * @param callback 回调函数，返回操作是否成功
      */
+    /**
+     * 通过坐标长按元素（px版本，优先命中目标视图并直接调用 performLongClick）
+     * 若找不到目标视图或视图不可长按，则回退为事件注入（DOWN->sleep->UP）
+     */
     fun longClickByCoordinate(activity: Activity, x: Float, y: Float, callback: (Boolean) -> Unit) {
         try {
-            // 获取整个Activity根视图
             val rootView = activity.findViewById<View>(android.R.id.content)
-            
-            // 创建ACTION_DOWN事件
+            val statusBar = UIUtils.getStatusBarHeight(activity)
+            val xScreen = x
+            val yScreen = y + statusBar
+
+            fun containsPoint(view: View, px: Float, py: Float): Boolean {
+                val loc = IntArray(2)
+                view.getLocationOnScreen(loc)
+                val left = loc[0].toFloat()
+                val top = loc[1].toFloat()
+                val right = left + view.width
+                val bottom = top + view.height
+                return px >= left && px <= right && py >= top && py <= bottom
+            }
+
+            fun findDeepestViewAtPoint(view: View, px: Float, py: Float): View? {
+                if (!containsPoint(view, px, py)) return null
+                if (view is ViewGroup) {
+                    for (i in 0 until view.childCount) {
+                        val child = view.getChildAt(i)
+                        val hit = findDeepestViewAtPoint(child, px, py)
+                        if (hit != null) return hit
+                    }
+                }
+                return view
+            }
+
+            val target = findDeepestViewAtPoint(rootView, xScreen, yScreen)
+            if (target != null && target.isEnabled && target.isLongClickable) {
+                val result = target.performLongClick()
+                callback(result)
+                return
+            }
+
+            // 回退：事件注入方式
             val downTime = SystemClock.uptimeMillis()
             val downEvent = MotionEvent.obtain(
                 downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0
             )
-            
-            // 分发ACTION_DOWN事件
             val downResult = rootView.dispatchTouchEvent(downEvent)
-            
-            // 长按需要保持按下状态一段时间（通常500ms以上）
-            Thread.sleep(600) // 长按持续时间
-            
-            // 创建ACTION_UP事件
+            Thread.sleep(700)
             val upTime = SystemClock.uptimeMillis()
             val upEvent = MotionEvent.obtain(
                 downTime, upTime, MotionEvent.ACTION_UP, x, y, 0
             )
-            
-            // 分发ACTION_UP事件
             val upResult = rootView.dispatchTouchEvent(upEvent)
-            
-            // 清理事件对象
             downEvent.recycle()
             upEvent.recycle()
-            
             callback(downResult && upResult)
-            
         } catch (e: Exception) {
             Log.e("longClickByCoordinate", "长按操作失败: ${e.message}")
             callback(false)

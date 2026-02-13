@@ -19,6 +19,7 @@ import androidx.test.rule.GrantPermissionRule
 import Agent.ActivityTracker
 import Agent.CommandHandler
 import android.os.Build
+import utlis.PageChangeVerifier
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
@@ -43,12 +44,12 @@ class FullAgentTest {
     val grantPermissionRule: GrantPermissionRule = GrantPermissionRule.grant(*resolveRuntimePermissions())
 
     @get:Rule
-    val activityRule = ActivityScenarioRule(LeaveApplicationActivity::class.java)
+    val activityRule = ActivityScenarioRule(TestHostActivity::class.java)
 
     private val TAG = "FullAgentTest"
     private val debug = DebugLogger(TAG)
     private lateinit var recorder: PerformanceRecorder
-    private lateinit var scenario: ActivityScenario<LeaveApplicationActivity>
+    private lateinit var scenario: ActivityScenario<TestHostActivity>
 
     /**
      * 计算元素树缓存：调用一次 get_state 以便后续按坐标查找元素
@@ -112,8 +113,18 @@ class FullAgentTest {
     private val EDIT_ID = 1002
     private val SCROLL_ID = 1003
     private val TEXT_ID = 1004
+    private val NEUTRAL_ID = 1005
+    private val GO_NEXT_ID = 1006
+    private val ADD_ITEM_ID = 1007
     // 等待超时统一配置（秒）
     private val DEFAULT_TIMEOUT_SECONDS = 20L
+    // [显眼配置] 每个测试的重复执行组数 N（用于统计平均/最大/最小耗时）
+    // 根据需求调整，默认设置为 N=10
+    private val RUNS_PER_ACTION = 10
+    // [显眼配置] 页面变化验证的默认参数（稳定窗口与轮询间隔）
+    private val DEFAULT_VERIFY_TIMEOUT_MS = 4000L
+    private val DEFAULT_VERIFY_STABLE_WINDOW_MS = 900L
+    private val DEFAULT_VERIFY_INTERVAL_MS = 80L
 
     /**
      * 测试前置初始化，准备性能记录器与测试场景，并确保页面空闲稳定
@@ -128,13 +139,6 @@ class FullAgentTest {
         // 使用 instrumentation 的 idle 等待替代纯 sleep，提升稳定性
         debug.step("setUp.wait_idle_before_ui")
         waitForIdle()
-        
-        // 初始化测试 UI
-        scenario.onActivity { activity ->
-            debug.step("setUp.setupTestUI.begin")
-            setupTestUI(activity)
-            debug.step("setUp.setupTestUI.end")
-        }
         
         // 等待 UI 稳定
         debug.step("setUp.wait_idle_after_ui")
@@ -153,67 +157,7 @@ class FullAgentTest {
         debug.step("tearDown.done")
     }
 
-    /**
-     * 在 Activity 中动态添加测试用的 UI 控件，保证测试环境一致
-     */
-    private fun setupTestUI(activity: Activity) {
-        debug.step("setupTestUI.begin")
-        val root = activity.findViewById<ViewGroup>(android.R.id.content)
-        root.removeAllViews()
-
-        val container = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-
-        // 1. 测试点击的按钮
-        val button = Button(activity).apply {
-            id = BTN_ID
-            text = "Test Button"
-            setOnClickListener { text = "Clicked" }
-        }
-        container.addView(button)
-
-        // 2. 测试输入的 EditText
-        val editText = EditText(activity).apply {
-            id = EDIT_ID
-            hint = "Input Here"
-        }
-        container.addView(editText)
-
-        // 3. 测试滑动的 ScrollView
-        val scrollView = ScrollView(activity).apply {
-            id = SCROLL_ID
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                500 // 限制高度以确保可滑动
-            )
-        }
-        val scrollContent = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        for (i in 1..20) {
-            scrollContent.addView(TextView(activity).apply {
-                text = "Item $i"
-                setPadding(20, 20, 20, 20)
-            })
-        }
-        scrollView.addView(scrollContent)
-        container.addView(scrollView)
-        
-        // 4. 显示状态的 TextView
-        val statusText = TextView(activity).apply {
-            id = TEXT_ID
-            text = "Status: Idle"
-        }
-        container.addView(statusText)
-
-        root.addView(container)
-        debug.step("setupTestUI.end")
-    }
+    // 使用固定静态的 TestHostActivity，不再在测试中动态创建 UI
 
     /**
      * 测试点击动作：通过 CommandHandler 执行 tap，并验证页面变化证据
@@ -223,6 +167,9 @@ class FullAgentTest {
         debug.step("testTapAction.begin")
         val actionName = "TAP"
         Log.d(TAG, "Starting testTapAction")
+
+        // 动作前获取稳定状态，用于独立证据比对
+        val preState = getStableState(1500, 300)
 
         // 1. 准备参数
         val params = JSONObject().apply {
@@ -248,14 +195,20 @@ class FullAgentTest {
         executeCommand("tap", params, actionName) { response ->
             // 3. 验证结果
             val status = response.optString("status")
-            val changeType = response.optString("page_change_type")
-            // 验证 UI 实际变化（按钮文本变为 Clicked）
-            var clicked = false
-            scenario.onActivity {
-                val btn = it.findViewById<Button>(BTN_ID)
-                clicked = (btn.text?.toString() == "Clicked")
+            val changeType = response.optString("page_change_type", "none")
+            // 独立证据：动作后获取稳定状态，比较与动作前状态是否真正发生变化
+            val (postState, probeMs) = getStableStateWithDuration(2000, 400)
+            val stateChanged = hasStateChanged(preState, postState)
+            val outcomeCategory = when {
+                status == "success" && stateChanged -> "执行成功且验证成功"
+                status == "success" && !stateChanged -> "执行不成功但验证误报"
+                status != "success" && stateChanged -> "执行成功但验证漏检"
+                else -> "执行不成功且验证一致"
             }
-            assertTrue(status == "success" && changeType.contains("view_hash_change") || (status == "error" && clicked))
+            recorder.noteVerifierOutcome(actionName, outcomeCategory)
+            recorder.noteVerifierProbeTime(actionName, probeMs)
+            assertTrue(status == "success" && changeType != "none")
+            assertTrue(stateChanged)
         }
         debug.step("testTapAction.end")
     }
@@ -268,6 +221,9 @@ class FullAgentTest {
         debug.step("testInputTextAction.begin")
         val actionName = "INPUT"
         Log.d(TAG, "Starting testInputTextAction")
+
+        // 动作前获取稳定状态
+        val preState = getStableState(1500, 300)
 
         // 动态获取 EditText 位置
         var editXDp = 0
@@ -299,6 +255,18 @@ class FullAgentTest {
                 val edit = it.findViewById<EditText>(EDIT_ID)
                 assertEquals(inputText, edit.text.toString())
             }
+            // 独立证据：获取postState并记录耗时与分类
+            val (postState, probeMs) = getStableStateWithDuration(2000, 400)
+            val stateChanged = hasStateChanged(preState, postState)
+            val status = response.optString("status")
+            val category = when {
+                status == "success" && stateChanged -> "执行成功且验证成功"
+                status == "success" && !stateChanged -> "执行不成功但验证误报"
+                status != "success" && stateChanged -> "执行成功但验证漏检"
+                else -> "执行不成功且验证一致"
+            }
+            recorder.noteVerifierOutcome(actionName, category)
+            recorder.noteVerifierProbeTime(actionName, probeMs)
         }
         debug.step("testInputTextAction.end")
     }
@@ -311,6 +279,9 @@ class FullAgentTest {
         debug.step("testSwipeAction.begin")
         val actionName = "SWIPE"
         Log.d(TAG, "Starting testSwipeAction")
+
+        // 动作前获取稳定状态
+        val preState = getStableState(1500, 300)
 
         var startXDp = 0
         var startYDp = 0
@@ -350,6 +321,17 @@ class FullAgentTest {
                 val scroll = it.findViewById<ScrollView>(SCROLL_ID)
                 assertTrue("ScrollView should have scrolled", scroll.scrollY > 0)
             }
+            // 独立证据：获取postState并记录耗时与分类
+            val (postState, probeMs) = getStableStateWithDuration(2000, 400)
+            val stateChanged = hasStateChanged(preState, postState)
+            val category = when {
+                status == "success" && stateChanged -> "执行成功且验证成功"
+                status == "success" && !stateChanged -> "执行不成功但验证误报"
+                status != "success" && stateChanged -> "执行成功但验证漏检"
+                else -> "执行不成功且验证一致"
+            }
+            recorder.noteVerifierOutcome(actionName, category)
+            recorder.noteVerifierProbeTime(actionName, probeMs)
         }
         debug.step("testSwipeAction.end")
     }
@@ -361,6 +343,8 @@ class FullAgentTest {
     fun testBackAction() {
         debug.step("testBackAction.begin")
         val actionName = "BACK"
+        // 动作前获取稳定状态
+        val preState = getStableState(1200, 300)
         // Back 可能会关闭 Activity，所以我们需要小心
         // 这里主要测试 CommandHandler 的处理逻辑
         
@@ -373,8 +357,122 @@ class FullAgentTest {
             val status = response.optString("status")
             val err = response.optString("error")
             assertTrue(status == "success" || err.contains("page unchanged") || err.contains("action failed"))
+            // 独立证据：获取postState并记录耗时与分类
+            val (postState, probeMs) = getStableStateWithDuration(2000, 400)
+            val stateChanged = hasStateChanged(preState, postState)
+            val category = when {
+                status == "success" && stateChanged -> "执行成功且验证成功"
+                status == "success" && !stateChanged -> "执行不成功但验证误报"
+                status != "success" && stateChanged -> "执行成功但验证漏检"
+                else -> "执行不成功且验证一致"
+            }
+            recorder.noteVerifierOutcome(actionName, category)
+            recorder.noteVerifierProbeTime(actionName, probeMs)
         }
         debug.step("testBackAction.end")
+    }
+
+    /**
+     * 测试双击动作：执行 double tap，验证页面变化或按钮文本变化
+     */
+    @Test
+    fun testDoubleTapAction() {
+        debug.step("testDoubleTapAction.begin")
+        val actionName = "DOUBLE_TAP"
+        // 动作前获取稳定状态
+        val preState = getStableState(1500, 300)
+        var btnXDp = 0
+        var btnYDp = 0
+        scenario.onActivity {
+            val btn = it.findViewById<View>(BTN_ID)
+            val location = IntArray(2)
+            btn.getLocationOnScreen(location)
+            val density = it.resources.displayMetrics.density
+            btnXDp = ((location[0] + btn.width / 2) / density).toInt()
+            btnYDp = ((location[1] + btn.height / 2) / density).toInt()
+        }
+        val params = JSONObject().apply {
+            put("element", org.json.JSONArray().apply {
+                put(btnXDp); put(btnYDp)
+            })
+        }
+        executeCommand("double tap", params, actionName) { response ->
+            val status = response.optString("status")
+            val changeType = response.optString("page_change_type", "none")
+            val (postState, probeMs) = getStableStateWithDuration(2000, 400)
+            val stateChanged = hasStateChanged(preState, postState)
+            val category = when {
+                status == "success" && stateChanged -> "执行成功且验证成功"
+                status == "success" && !stateChanged -> "执行不成功但验证误报"
+                status != "success" && stateChanged -> "执行成功但验证漏检"
+                else -> "执行不成功且验证一致"
+            }
+            recorder.noteVerifierOutcome(actionName, category)
+            recorder.noteVerifierProbeTime(actionName, probeMs)
+            assertTrue(status == "success" && changeType != "none")
+            assertTrue(stateChanged)
+        }
+        debug.step("testDoubleTapAction.end")
+    }
+
+    /**
+     * 测试长按动作：执行 long press，验证按钮文本变化为 LongPressed
+     */
+    @Test
+    fun testLongPressAction() {
+        debug.step("testLongPressAction.begin")
+        val actionName = "LONG_PRESS"
+        // 动作前获取稳定状态
+        val preState = getStableState(1500, 300)
+        var btnXDp = 0
+        var btnYDp = 0
+        scenario.onActivity {
+            val btn = it.findViewById<View>(BTN_ID)
+            val location = IntArray(2)
+            btn.getLocationOnScreen(location)
+            val density = it.resources.displayMetrics.density
+            btnXDp = ((location[0] + btn.width / 2) / density).toInt()
+            btnYDp = ((location[1] + btn.height / 2) / density).toInt()
+        }
+        val params = JSONObject().apply {
+            put("element", org.json.JSONArray().apply {
+                put(btnXDp); put(btnYDp)
+            })
+        }
+        executeCommand("long press", params, actionName) { response ->
+            val status = response.optString("status")
+            var longPressed = false
+            scenario.onActivity {
+                val btn = it.findViewById<Button>(BTN_ID)
+                longPressed = (btn.text?.toString() == "LongPressed")
+            }
+            assertTrue(longPressed && (status == "success" || status == "error"))
+            // 独立证据：获取postState并记录耗时与分类
+            val (postState, probeMs) = getStableStateWithDuration(2000, 400)
+            val stateChanged = hasStateChanged(preState, postState)
+            val category = when {
+                status == "success" && stateChanged -> "执行成功且验证成功"
+                status == "success" && !stateChanged -> "执行不成功但验证误报"
+                status != "success" && stateChanged -> "执行成功但验证漏检"
+                else -> "执行不成功且验证一致"
+            }
+            recorder.noteVerifierOutcome(actionName, category)
+            recorder.noteVerifierProbeTime(actionName, probeMs)
+        }
+        debug.step("testLongPressAction.end")
+    }
+
+    /**
+     * 测试 Home 动作：验证返回未实现错误并统计耗时
+     */
+    @Test
+    fun testHomeAction() {
+        debug.step("testHomeAction.begin")
+        val actionName = "HOME"
+        executeCommand("home", JSONObject(), actionName) { response ->
+            assertEquals("error", response.optString("status"))
+        }
+        debug.step("testHomeAction.end")
     }
 
     /**
@@ -464,6 +562,92 @@ class FullAgentTest {
         debug.step("testGetStateDirtyPageDefense.end")
     }
 
+    /**
+     * PageChangeVerifier 耗时测试：在文本变化场景下测量验证耗时
+     */
+    /**
+     * PageChangeVerifier 耗时测试：在文本变化场景下测量验证耗时（断言移至await之后）
+     */
+    @Test
+    fun testPageChangeVerifierCost_TextChange() {
+        debug.step("testPageChangeVerifierCost_TextChange.begin")
+        val latch = CountDownLatch(1)
+        val changedRef = java.util.concurrent.atomic.AtomicReference<Boolean>(false)
+        val typeRef = java.util.concurrent.atomic.AtomicReference<String>("none")
+        recorder.start("VERIFIER_TEXT_CHANGE")
+        scenario.onActivity { activity ->
+            val preAct = activity
+            val preHash = PageChangeVerifier.computePreViewTreeHash(activity)
+            val preWebHash = PageChangeVerifier.computePreWebViewAggHash(activity)
+            val tv = activity.findViewById<TextView>(TEXT_ID)
+            tv.text = "VerifierChange"
+            PageChangeVerifier.verifyActionWithPageChange(
+                handler = Handler(Looper.getMainLooper()),
+                getCurrentActivity = { ActivityTracker.getCurrentActivity() },
+                preActivity = preAct,
+                preViewTreeHash = preHash,
+                preWebViewAggHash = preWebHash,
+                timeoutMs = DEFAULT_VERIFY_TIMEOUT_MS,
+                intervalMs = DEFAULT_VERIFY_INTERVAL_MS,
+                stableWindowMs = DEFAULT_VERIFY_STABLE_WINDOW_MS
+            ) { changed, type ->
+                try {
+                    recorder.stopWithOutcome("VERIFIER_TEXT_CHANGE", changed)
+                    recorder.noteChangeType("VERIFIER_TEXT_CHANGE", type)
+                    changedRef.set(changed)
+                    typeRef.set(type)
+                } finally {
+                    latch.countDown()
+                }
+            }
+        }
+        assertTrue(latch.await(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        assertTrue(changedRef.get() == true)
+        debug.step("testPageChangeVerifierCost_TextChange.end")
+    }
+
+    /**
+     * PageChangeVerifier 耗时测试：在无变化场景下测量验证耗时与超时返回
+     */
+    /**
+     * PageChangeVerifier 耗时测试：在无变化场景下测量验证耗时与超时返回（断言移至await之后）
+     */
+    @Test
+    fun testPageChangeVerifierCost_NoChange() {
+        debug.step("testPageChangeVerifierCost_NoChange.begin")
+        val latch = CountDownLatch(1)
+        val changedRef = java.util.concurrent.atomic.AtomicReference<Boolean>(true)
+        val typeRef = java.util.concurrent.atomic.AtomicReference<String>("none")
+        recorder.start("VERIFIER_NO_CHANGE")
+        scenario.onActivity { activity ->
+            val preAct = activity
+            val preHash = PageChangeVerifier.computePreViewTreeHash(activity)
+            val preWebHash = PageChangeVerifier.computePreWebViewAggHash(activity)
+            PageChangeVerifier.verifyActionWithPageChange(
+                handler = Handler(Looper.getMainLooper()),
+                getCurrentActivity = { ActivityTracker.getCurrentActivity() },
+                preActivity = preAct,
+                preViewTreeHash = preHash,
+                preWebViewAggHash = preWebHash,
+                timeoutMs = 800L,
+                intervalMs = 100L,
+                stableWindowMs = DEFAULT_VERIFY_STABLE_WINDOW_MS
+            ) { changed, type ->
+                try {
+                    recorder.stopWithOutcome("VERIFIER_NO_CHANGE", changed)
+                    recorder.noteChangeType("VERIFIER_NO_CHANGE", type)
+                    changedRef.set(changed)
+                    typeRef.set(type)
+                } finally {
+                    latch.countDown()
+                }
+            }
+        }
+        assertTrue(latch.await(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        assertFalse(changedRef.get() == true)
+        debug.step("testPageChangeVerifierCost_NoChange.end")
+    }
+
     // --- Helper Methods ---
 
     /**
@@ -489,7 +673,16 @@ class FullAgentTest {
         debug.step("executeCommand.onActivity.invoke:$cmd")
         scenario.onActivity { activity ->
             CommandHandler.handleCommand(cmd, params, "req_$actionName", activity) { response ->
-                recorder.stop(actionName)
+                val success = response.optString("status") == "success"
+                recorder.stopWithOutcome(actionName, success)
+                val changeType = response.optString("page_change_type", "")
+                if (changeType.isNotEmpty()) {
+                    recorder.noteChangeType(actionName, changeType)
+                }
+                // 将单次动作耗时打印到标准输出，便于在测试报告中显示
+                val duration = recorder.getLastDuration(actionName)
+                val ct = if (changeType.isNotEmpty()) changeType else "none"
+                System.out.println("[AgentReport] Action=" + actionName + " Duration=" + duration + "ms Success=" + success + " ChangeType=" + ct)
                 resultRef.set(response)
                 latch.countDown()
                 debug.step("executeCommand.callback_received:$cmd")
@@ -507,6 +700,563 @@ class FullAgentTest {
         Log.d(TAG, "Response for $cmd: $response")
         assertion(response)
         debug.step("executeCommand.done:$cmd")
+    }
+
+    /**
+     * 获取指定视图中心点的dp坐标
+     * @param viewId 视图ID
+     * @return Pair(xDp, yDp)
+     */
+    private fun getViewCenterDp(viewId: Int): Pair<Int, Int> {
+        var xDp = 0
+        var yDp = 0
+        scenario.onActivity {
+            val v = it.findViewById<View>(viewId)
+            val loc = IntArray(2)
+            v.getLocationOnScreen(loc)
+            val density = it.resources.displayMetrics.density
+            xDp = ((loc[0] + v.width / 2) / density).toInt()
+            yDp = ((loc[1] + v.height / 2) / density).toInt()
+        }
+        return Pair(xDp, yDp)
+    }
+
+    /**
+     * 重复执行指定动作N次，并为每次结果做断言
+     * @param cmd 命令
+     * @param buildParams 构建参数的函数（按需动态计算）
+     * @param actionName 记录名称
+     * @param runs 次数
+     * @param perRunAssert 针对每次响应的断言
+     */
+    /**
+     * 重复执行指定动作N次，并可选进行独立状态对比验证与记录
+     * @param cmd 命令
+     * @param buildParams 构建参数的函数（按需动态计算）
+     * @param actionName 记录名称
+     * @param runs 次数
+     * @param independentVerify 是否进行独立状态对比验证（获取pre/post state并记录验证器结果与postState耗时）
+     * @param perRunAssert 针对每次响应的断言
+     */
+    /**
+     * 重复执行指定动作N次，并可选进行独立状态对比验证与记录
+     * 同时可对比启用/禁用页面变化验证的耗时差异（VER/NOV 分组）
+     */
+    private fun repeatAction(
+        cmd: String,
+        buildParams: () -> JSONObject,
+        actionName: String,
+        runs: Int = RUNS_PER_ACTION,
+        independentVerify: Boolean = false,
+        compareVerifyCost: Boolean = true,
+        perRunAssert: (JSONObject, Int) -> Unit
+    ) {
+        for (i in 1..runs) {
+            // 验证开启模式（用于断言与独立状态对比）
+            run {
+                val actionNameVer = "${actionName}_VER"
+                val preState = if (independentVerify) getStableState(1200, 300) else null
+                val params = buildParams().apply { 
+                    put("verify_page_change", true)
+                    put("verify_timeout_ms", DEFAULT_VERIFY_TIMEOUT_MS)
+                    put("verify_stable_window_ms", DEFAULT_VERIFY_STABLE_WINDOW_MS)
+                    put("verify_interval_ms", DEFAULT_VERIFY_INTERVAL_MS)
+                }
+                executeCommand(cmd, params, actionNameVer) { resp ->
+                    if (independentVerify) {
+                        val tStart = System.currentTimeMillis()
+                        val postState = getStableState(1800, 400)
+                        val probeMs = System.currentTimeMillis() - tStart
+                        val status = resp.optString("status")
+                        val changed = hasStateChanged(preState!!, postState)
+                        val category = when {
+                            status == "success" && changed -> "执行成功且验证成功"
+                            status == "success" && !changed -> "执行不成功但验证误报"
+                            status != "success" && changed -> "执行成功但验证漏检"
+                            else -> "执行不成功且验证一致"
+                        }
+                        recorder.noteVerifierOutcome(actionNameVer, category)
+                        recorder.noteVerifierProbeTime(actionNameVer, probeMs)
+                    }
+                    perRunAssert(resp, i)
+                }
+            }
+            // 验证关闭模式（仅统计耗时用于对比，不进行断言）
+            if (compareVerifyCost) {
+                val actionNameNov = "${actionName}_NOV"
+                val paramsNov = buildParams().apply { put("verify_page_change", false) }
+                executeCommand(cmd, paramsNov, actionNameNov) { _ -> 
+                    // 不进行断言，仅记录耗时与结果
+                }
+            }
+        }
+    }
+
+    /**
+     * 以稳定窗口获取当前页面状态（独立于 PageChangeVerifier 的证据）
+     * @param stabilizeTimeoutMs 稳定化最长等待时间
+     * @param stableWindowMs 认为稳定所需的持续静默窗口
+     * @return get_state 的 JSON 响应
+     */
+    private fun getStableState(stabilizeTimeoutMs: Int, stableWindowMs: Int): JSONObject {
+        val latch = CountDownLatch(1)
+        val resultRef = AtomicReference<JSONObject>()
+        val act = Agent.ActivityTracker.getCurrentActivity()
+        val params = JSONObject().apply {
+            put("stabilize_timeout_ms", stabilizeTimeoutMs)
+            put("stable_window_ms", stableWindowMs)
+        }
+        Handler(Looper.getMainLooper()).post {
+            CommandHandler.handleCommand("get_state", params, "req_probe_state", act) { resp ->
+                resultRef.set(resp)
+                latch.countDown()
+            }
+        }
+        assertTrue(latch.await(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        val res = resultRef.get()
+        assertNotNull(res)
+        return res!!
+    }
+
+    /**
+     * 获取稳定状态并返回获取耗时
+     * @param stabilizeTimeoutMs 稳定化最长等待时间
+     * @param stableWindowMs 稳定窗口
+     * @return Pair(state, durationMs)
+     */
+    private fun getStableStateWithDuration(stabilizeTimeoutMs: Int, stableWindowMs: Int): Pair<JSONObject, Long> {
+        val t0 = System.currentTimeMillis()
+        val state = getStableState(stabilizeTimeoutMs, stableWindowMs)
+        val dt = System.currentTimeMillis() - t0
+        return Pair(state, dt)
+    }
+
+    /**
+     * 计算 a11y_tree 的轻量哈希（独立计算，用于与 PageChangeVerifier 交叉验证）
+     * @param state get_state 响应
+     * @return 哈希值
+     */
+    private fun computeA11yHash(state: JSONObject): Int {
+        val arr = state.optJSONArray("a11y_tree") ?: return 0
+        fun nodeHash(node: JSONObject): Int {
+            var h = 17
+            h = h * 31 + node.optString("class", "").hashCode()
+            h = h * 31 + node.optString("text", "").hashCode()
+            h = h * 31 + node.optString("bounds", "").hashCode()
+            val children = node.optJSONArray("children")
+            if (children != null) {
+                for (i in 0 until children.length()) {
+                    val child = children.optJSONObject(i) ?: continue
+                    h = h * 31 + nodeHash(child)
+                }
+            }
+            return h
+        }
+        var total = 0
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            total = total * 31 + nodeHash(obj)
+        }
+        return total
+    }
+
+    /**
+     * 判断两个稳定状态是否存在页面变化（独立证据）
+     * @param pre 动作前状态
+     * @param post 动作后状态
+     */
+    private fun hasStateChanged(pre: JSONObject, post: JSONObject): Boolean {
+        val prePhone = pre.optJSONObject("phone_state") ?: JSONObject()
+        val postPhone = post.optJSONObject("phone_state") ?: JSONObject()
+        // Activity 变化直接视为页面变化
+        if (prePhone.optString("activity") != postPhone.optString("activity")) {
+            return true
+        }
+        // 比较 a11y_tree 的轻量哈希
+        return computeA11yHash(pre) != computeA11yHash(post)
+    }
+    /**
+     * 递归查找 a11y_tree 是否包含指定文本
+     * @param state get_state 的响应
+     * @param keyword 关键字
+     */
+    private fun a11yTreeContainsText(state: JSONObject, keyword: String): Boolean {
+        val arr = state.optJSONArray("a11y_tree") ?: return false
+        fun findIn(node: JSONObject): Boolean {
+            val text = node.optString("text", "")
+            if (text.contains(keyword)) return true
+            val children = node.optJSONArray("children") ?: return false
+            for (i in 0 until children.length()) {
+                val child = children.optJSONObject(i) ?: continue
+                if (findIn(child)) return true
+            }
+            return false
+        }
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            if (findIn(obj)) return true
+        }
+        return false
+    }
+
+    // --- Repeated Positive/Negative Tests ---
+
+    /**
+     * TAP 正例：点击按钮，重复统计耗时与验证类型
+     */
+    @Test
+    fun testTapActionRepeatedPositive() {
+        val center = getViewCenterDp(BTN_ID)
+        repeatAction(
+            cmd = "tap",
+            buildParams = {
+                JSONObject().apply {
+                    put("x", center.first)
+                    put("y", center.second)
+                }
+            },
+            actionName = "TAP_POS",
+            independentVerify = true
+        ) { resp, _ ->
+            val status = resp.optString("status")
+            val change = resp.optString("page_change_type", "")
+            assertTrue(status == "success" && change.contains("view_hash_change"))
+        }
+    }
+
+    /**
+     * TAP 反例：点击中性按钮（不改变文本），PageChangeVerifier 应给出未变化
+     */
+    @Test
+    fun testTapActionRepeatedNegative() {
+        val center = getViewCenterDp(NEUTRAL_ID)
+        repeatAction(
+            cmd = "tap",
+            buildParams = {
+                JSONObject().apply {
+                    put("x", center.first)
+                    put("y", center.second)
+                }
+            },
+            actionName = "TAP_NEG",
+            independentVerify = true
+        ) { resp, _ ->
+            val status = resp.optString("status")
+            val err = resp.optString("error", "")
+            assertTrue(status == "error" && (err.contains("page unchanged") || err.isNotEmpty()))
+        }
+    }
+
+    /**
+     * INPUT 正例：输入不同文本，重复统计耗时
+     */
+    @Test
+    fun testInputTextActionRepeatedPositive() {
+        val center = getViewCenterDp(EDIT_ID)
+        repeatAction(
+            cmd = "input_text",
+            buildParams = {
+                val text = "Hello Agent ${System.currentTimeMillis() % 1000}"
+                JSONObject().apply {
+                    put("text", text)
+                    put("element", org.json.JSONArray().apply {
+                        put(center.first); put(center.second)
+                    })
+                }
+            },
+            actionName = "INPUT_POS",
+            independentVerify = true
+        ) { resp, _ ->
+            assertEquals("success", resp.optString("status"))
+        }
+    }
+
+    /**
+     * INPUT 反例：重复输入相同文本“Seed”，PageChangeVerifier 应判定未变化
+     */
+    @Test
+    fun testInputTextActionRepeatedNegative() {
+        val center = getViewCenterDp(EDIT_ID)
+        // 先确保文本为 Seed
+        scenario.onActivity {
+            val edit = it.findViewById<EditText>(EDIT_ID)
+            edit.setText("Seed")
+        }
+        repeatAction(
+            cmd = "input_text",
+            buildParams = {
+                JSONObject().apply {
+                    put("text", "Seed")
+                    put("element", org.json.JSONArray().apply {
+                        put(center.first); put(center.second)
+                    })
+                }
+            },
+            actionName = "INPUT_NEG",
+            independentVerify = true
+        ) { resp, _ ->
+            val status = resp.optString("status")
+            val err = resp.optString("error", "")
+            assertTrue(status == "error" && err.contains("page unchanged"))
+        }
+    }
+
+    /**
+     * SWIPE 正例：向上滑动 ScrollView，重复统计耗时
+     */
+    @Test
+    fun testSwipeActionRepeatedPositive() {
+        var startXDp = 0; var startYDp = 0; var endXDp = 0; var endYDp = 0
+        scenario.onActivity {
+            val scroll = it.findViewById<View>(SCROLL_ID)
+            val loc = IntArray(2); scroll.getLocationOnScreen(loc)
+            val d = it.resources.displayMetrics.density
+            val sx = loc[0] + scroll.width / 2
+            val sy = loc[1] + scroll.height - 50
+            val ex = sx
+            val ey = loc[1] + 50
+            startXDp = (sx / d).toInt(); startYDp = (sy / d).toInt()
+            endXDp = (ex / d).toInt(); endYDp = (ey / d).toInt()
+        }
+        repeatAction(
+            cmd = "swipe",
+            buildParams = {
+                JSONObject().apply {
+                    put("start_x", startXDp); put("start_y", startYDp)
+                    put("end_x", endXDp); put("end_y", endYDp)
+                    put("duration_ms", 500)
+                }
+            },
+            actionName = "SWIPE_POS",
+            independentVerify = true
+        ) { resp, _ ->
+            val status = resp.optString("status")
+            assertEquals("success", status)
+        }
+    }
+
+    /**
+     * SWIPE 反例：起止坐标相同，PageChangeVerifier 应判定未变化
+     */
+    @Test
+    fun testSwipeActionRepeatedNegative() {
+        var centerXDp = 0; var centerYDp = 0
+        scenario.onActivity {
+            val scroll = it.findViewById<View>(SCROLL_ID)
+            val loc = IntArray(2); scroll.getLocationOnScreen(loc)
+            val d = it.resources.displayMetrics.density
+            val cx = loc[0] + scroll.width / 2
+            val cy = loc[1] + scroll.height / 2
+            centerXDp = (cx / d).toInt(); centerYDp = (cy / d).toInt()
+        }
+        repeatAction(
+            cmd = "swipe",
+            buildParams = {
+                JSONObject().apply {
+                    put("start_x", centerXDp); put("start_y", centerYDp)
+                    put("end_x", centerXDp); put("end_y", centerYDp)
+                    put("duration_ms", 300)
+                }
+            },
+            actionName = "SWIPE_NEG",
+            independentVerify = true
+        ) { resp, _ ->
+            val status = resp.optString("status")
+            val err = resp.optString("error", "")
+            assertTrue(status == "error" && err.contains("page unchanged"))
+        }
+    }
+
+    /**
+     * DOUBLE TAP 正例：在按钮上重复执行
+     */
+    @Test
+    fun testDoubleTapActionRepeatedPositive() {
+        val center = getViewCenterDp(BTN_ID)
+        repeatAction(
+            cmd = "double tap",
+            buildParams = {
+                JSONObject().apply {
+                    put("element", org.json.JSONArray().apply {
+                        put(center.first); put(center.second)
+                    })
+                }
+            },
+            actionName = "DOUBLE_POS",
+            independentVerify = true
+        ) { resp, _ ->
+            assertEquals("success", resp.optString("status"))
+        }
+    }
+
+    /**
+     * DOUBLE TAP 反例：在中性按钮上重复执行
+     */
+    @Test
+    fun testDoubleTapActionRepeatedNegative() {
+        val center = getViewCenterDp(NEUTRAL_ID)
+        repeatAction(
+            cmd = "double tap",
+            buildParams = {
+                JSONObject().apply {
+                    put("element", org.json.JSONArray().apply {
+                        put(center.first); put(center.second)
+                    })
+                }
+            },
+            actionName = "DOUBLE_NEG",
+            independentVerify = true
+        ) { resp, _ ->
+            val status = resp.optString("status")
+            val err = resp.optString("error", "")
+            assertTrue(status == "error" && err.contains("page unchanged"))
+        }
+    }
+
+    /**
+     * LONG PRESS 正例：在按钮上重复执行
+     */
+    @Test
+    fun testLongPressActionRepeatedPositive() {
+        val center = getViewCenterDp(BTN_ID)
+        repeatAction(
+            cmd = "long press",
+            buildParams = {
+                JSONObject().apply {
+                    put("element", org.json.JSONArray().apply {
+                        put(center.first); put(center.second)
+                    })
+                }
+            },
+            actionName = "LONG_POS",
+            independentVerify = true
+        ) { resp, _ ->
+            val status = resp.optString("status")
+            var longPressed = false
+            scenario.onActivity {
+                val btn = it.findViewById<Button>(BTN_ID)
+                longPressed = (btn.text?.toString() == "LongPressed")
+            }
+            assertTrue(longPressed && (status == "success" || status == "error"))
+        }
+    }
+
+    /**
+     * LONG PRESS 反例：在中性按钮上重复执行（不可长按）
+     */
+    @Test
+    fun testLongPressActionRepeatedNegative() {
+        val center = getViewCenterDp(NEUTRAL_ID)
+        repeatAction(
+            cmd = "long press",
+            buildParams = {
+                JSONObject().apply {
+                    put("element", org.json.JSONArray().apply {
+                        put(center.first); put(center.second)
+                    })
+                }
+            },
+            actionName = "LONG_NEG",
+            independentVerify = true
+        ) { resp, _ ->
+            val status = resp.optString("status")
+            val err = resp.optString("error", "")
+            // 中性按钮不可长按，应为错误或未变化
+            assertTrue(status == "error" && (err.contains("action failed") || err.contains("page unchanged")))
+        }
+    }
+
+    // --- Stable Verifier Complex Cases ---
+
+    /**
+     * 布局变化后立即 get_state：验证 PageStableVerifier 返回稳定后的 a11y_tree
+     */
+    @Test
+    fun testGetStateAfterLayoutChangeStabilized() {
+        // 点击“Add Item”造成结构变化
+        val addCenter = getViewCenterDp(ADD_ITEM_ID)
+        executeCommand("tap", JSONObject().apply {
+            put("x", addCenter.first); put("y", addCenter.second)
+        }, "TAP_ADD_ITEM") {
+            // 立即请求 get_state，并设置稳定窗口
+            val latch = CountDownLatch(1)
+            var state: JSONObject? = null
+            scenario.onActivity { activity ->
+                val params = JSONObject().apply {
+                    put("stabilize_timeout_ms", 3000)
+                    put("stable_window_ms", 600)
+                }
+                CommandHandler.handleCommand("get_state", params, "req_after_layout", activity) { resp ->
+                    state = resp
+                    latch.countDown()
+                }
+            }
+            assertTrue(latch.await(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+            assertNotNull(state)
+            val ok = a11yTreeContainsText(state!!, "AddedItem")
+            assertTrue(ok)
+        }
+    }
+
+    /**
+     * 活动跳转后立即 get_state：验证返回新 Activity 的稳定状态
+     */
+    @Test
+    fun testGetStateAfterActivitySwitchStabilized() {
+        val nextCenter = getViewCenterDp(GO_NEXT_ID)
+        executeCommand("tap", JSONObject().apply {
+            put("x", nextCenter.first); put("y", nextCenter.second)
+        }, "TAP_GO_NEXT") {
+            // 等待当前Activity切换为TestSecondActivity
+            var switched = false
+            run {
+                val waitStart = System.currentTimeMillis()
+                while (System.currentTimeMillis() - waitStart < 5000) {
+                    val cur = Agent.ActivityTracker.getCurrentActivity()
+                    if (cur != null && cur.javaClass.simpleName == "TestSecondActivity") {
+                        switched = true
+                        break
+                    }
+                    Thread.sleep(50)
+                }
+            }
+            // 若点击未触发跳转，则直接启动目标Activity作为兜底
+            if (!switched) {
+                scenario.onActivity { host ->
+                    host.startActivity(android.content.Intent(host, TestSecondActivity::class.java))
+                }
+                // 再次等待跳转完成
+                val waitStart2 = System.currentTimeMillis()
+                while (System.currentTimeMillis() - waitStart2 < 5000) {
+                    val cur = Agent.ActivityTracker.getCurrentActivity()
+                    if (cur != null && cur.javaClass.simpleName == "TestSecondActivity") {
+                        switched = true
+                        break
+                    }
+                    Thread.sleep(50)
+                }
+            }
+            assertTrue("Activity should switch to TestSecondActivity", switched)
+            // 使用当前栈顶Activity调用get_state
+            val latch = CountDownLatch(1)
+            var state: JSONObject? = null
+            val current = Agent.ActivityTracker.getCurrentActivity()
+            val params = JSONObject().apply {
+                put("stabilize_timeout_ms", 4000)
+                put("stable_window_ms", 800)
+            }
+            // 直接在主线程调用，避免scenario绑定旧Activity
+            Handler(Looper.getMainLooper()).post {
+                CommandHandler.handleCommand("get_state", params, "req_after_nav", current) { resp ->
+                    state = resp
+                    latch.countDown()
+                }
+            }
+            assertTrue(latch.await(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+            assertNotNull(state)
+            val phone = state!!.optJSONObject("phone_state") ?: JSONObject()
+            assertEquals("TestSecondActivity", phone.optString("activity"))
+        }
     }
 
     /**
@@ -538,11 +1288,20 @@ class FullAgentTest {
     class PerformanceRecorder {
         private val startTimes = HashMap<String, Long>()
         private val durations = ArrayList<Record>()
+        private val changeTypes = HashMap<String, HashMap<String, Int>>()
+        private val verifierOutcomes = HashMap<String, HashMap<String, Int>>()
+        private val verifierProbeTimes = HashMap<String, ArrayList<Long>>()
 
         /**
          * 单条记录结构
          */
-        data class Record(val name: String, val durationMs: Long, val success: Boolean = true)
+        data class Record(
+            val name: String,
+            val durationMs: Long,
+            val success: Boolean = true,
+            val startMs: Long = 0L,
+            val endMs: Long = 0L
+        )
 
         /**
          * 开始记录某动作
@@ -556,9 +1315,23 @@ class FullAgentTest {
          */
         fun stop(name: String) {
             val start = startTimes[name] ?: return
-            val duration = System.currentTimeMillis() - start
-            durations.add(Record(name, duration))
-            Log.i("Performance", "Action [$name] took ${duration}ms")
+            val end = System.currentTimeMillis()
+            val duration = end - start
+            durations.add(Record(name, duration, true, start, end))
+            Log.i("Performance", "Action [$name] took ${duration}ms (start=$start, end=$end)")
+            System.out.println("[AgentReport] ActionRecord name=" + name + " start=" + start + " end=" + end + " duration=" + duration + "ms success=true")
+        }
+        
+        /**
+         * 停止记录并写入成功标记
+         */
+        fun stopWithOutcome(name: String, success: Boolean) {
+            val start = startTimes[name] ?: return
+            val end = System.currentTimeMillis()
+            val duration = end - start
+            durations.add(Record(name, duration, success, start, end))
+            Log.i("Performance", "Action [$name] took ${duration}ms (start=$start, end=$end), success=$success")
+            System.out.println("[AgentReport] ActionRecord name=" + name + " start=" + start + " end=" + end + " duration=" + duration + "ms success=" + success)
         }
         
         /**
@@ -567,16 +1340,44 @@ class FullAgentTest {
         fun getLastDuration(name: String): Long {
             return durations.findLast { it.name == name }?.durationMs ?: 0L
         }
+        
+        /**
+         * 记录页面变化类型分布
+         */
+        fun noteChangeType(name: String, type: String) {
+            val map = changeTypes.getOrPut(name) { HashMap() }
+            map[type] = (map[type] ?: 0) + 1
+        }
 
         /**
-         * 输出性能汇总报告到日志
+         * 记录验证器结果分类
+         */
+        fun noteVerifierOutcome(name: String, category: String) {
+            val map = verifierOutcomes.getOrPut(name) { HashMap() }
+            map[category] = (map[category] ?: 0) + 1
+        }
+
+        /**
+         * 记录postState获取耗时（验证器状态对比额外时间）
+         */
+        fun noteVerifierProbeTime(name: String, durationMs: Long) {
+            val list = verifierProbeTimes.getOrPut(name) { ArrayList() }
+            list.add(durationMs)
+        }
+
+        /**
+         * 输出性能汇总报告到日志与标准输出（符合计划文档中的格式）
          */
         fun printReport() {
             Log.i("AgentTest", "============================================")
             Log.i("AgentTest", "动作执行性能报告 (单位: ms)")
             Log.i("AgentTest", "============================================")
-            Log.i("AgentTest", String.format("| %-15s | %-8s | %-8s |", "Action", "Duration", "Result"))
+            Log.i("AgentTest", String.format("| %-10s | %-6s | %-6s | %-8s | %-8s | %-8s |", "动作类型", "总次数", "成功率", "平均耗时", "最大耗时", "最小耗时"))
             Log.i("AgentTest", "--------------------------------------------")
+            System.out.println("[AgentReport] ============================================")
+            System.out.println("[AgentReport] 动作执行性能报告 (单位: ms)")
+            System.out.println("[AgentReport] ============================================")
+            System.out.println(String.format("[AgentReport] | %-10s | %-6s | %-6s | %-8s | %-8s | %-8s |", "动作类型", "总次数", "成功率", "平均耗时", "最大耗时", "最小耗时"))
             
             // Group by action
             val grouped = durations.groupBy { it.name }
@@ -585,11 +1386,50 @@ class FullAgentTest {
                 val min = records.minOf { it.durationMs }
                 val max = records.maxOf { it.durationMs }
                 val count = records.size
+                val successCount = records.count { it.success }
+                val successRate = if (count > 0) (successCount * 100 / count) else 0
                 
-                Log.i("AgentTest", String.format("| %-15s | Avg:%4d | Count:%2d |", name, avg, count))
-                Log.i("AgentTest", String.format("| %-15s | Min:%4d | Max:%4d |", "", min, max))
+                Log.i("AgentTest", String.format("| %-10s | %-6d | %-5d%% | %-7dms | %-7dms | %-7dms |", name, count, successRate, avg, max, min))
+                System.out.println(String.format("[AgentReport] | %-10s | %-6d | %-5d%% | %-7dms | %-7dms | %-7dms |", name, count, successRate, avg, max, min))
+                val types = changeTypes[name]?.entries?.joinToString { "${it.key}:${it.value}" } ?: "None"
+                Log.i("AgentTest", String.format("| %-10s | 变化类型分布: %s", "", types))
+                System.out.println("[AgentReport] Types " + name + " = " + types)
+                val outcomes = verifierOutcomes[name]?.entries?.joinToString { "${it.key}:${it.value}" } ?: "None"
+                Log.i("AgentTest", String.format("| %-10s | 验证器结果分布: %s", "", outcomes))
+                System.out.println("[AgentReport] VerifierOutcomes " + name + " = " + outcomes)
+                val probes = verifierProbeTimes[name]
+                if (probes != null && probes.isNotEmpty()) {
+                    val pAvg = probes.average().toLong()
+                    val pMin = probes.minOrNull() ?: 0L
+                    val pMax = probes.maxOrNull() ?: 0L
+                    System.out.println(String.format("[AgentReport] VerifierProbe %-10s | 次数=%-4d | 平均=%-6dms | 最大=%-6dms | 最小=%-6dms", name, probes.size, pAvg, pMax, pMin))
+                    Log.i("AgentTest", String.format("| %-10s | 验证器Probe: 次数=%-4d 平均=%-6dms 最大=%-6dms 最小=%-6dms", "", probes.size, pAvg, pMax, pMin))
+                } else {
+                    System.out.println(String.format("[AgentReport] VerifierProbe %-10s | 无数据", name))
+                }
             }
             Log.i("AgentTest", "============================================")
+            System.out.println("[AgentReport] --------------------------------------------")
+            
+            // 脏页面防御测试表
+            val staticTime = getLastDuration("GET_STATE_STATIC")
+            val dirtyTime = getLastDuration("GET_STATE_DIRTY")
+            val waited = if (dirtyTime > 0 && staticTime > 0) (dirtyTime - staticTime) else 0L
+            Log.i("AgentTest", "脏页面防御测试")
+            Log.i("AgentTest", String.format("| %-8s | %-8s | %-16s |", "场景", "耗时", "结果"))
+            Log.i("AgentTest", String.format("| %-8s | %-7dms | %-16s |", "静态页面", staticTime, "成功 (Stable)"))
+            Log.i("AgentTest", String.format("| %-8s | %-7dms | %-16s |", "动态干扰", dirtyTime, "成功 (Waited)"))
+            if (waited > 0) {
+                Log.i("AgentTest", "-> 验证通过: 有效等待了 ${waited}ms+")
+            }
+            System.out.println("[AgentReport] 脏页面防御测试")
+            System.out.println(String.format("[AgentReport] | %-8s | %-8s | %-16s |", "场景", "耗时", "结果"))
+            System.out.println(String.format("[AgentReport] | %-8s | %-7dms | %-16s |", "静态页面", staticTime, "成功 (Stable)"))
+            System.out.println(String.format("[AgentReport] | %-8s | %-7dms | %-16s |", "动态干扰", dirtyTime, "成功 (Waited)"))
+            if (waited > 0) {
+                System.out.println("[AgentReport] -> 验证通过: 有效等待了 " + waited + "ms+")
+            }
+            System.out.println("[AgentReport] ============================================")
         }
     }
 

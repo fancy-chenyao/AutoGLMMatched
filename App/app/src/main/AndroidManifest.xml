@@ -61,6 +61,18 @@
             android:theme="@style/Theme.EmpLab" />
             
         <activity
+            android:name=".TestHostActivity"
+            android:exported="false"
+            android:label="测试宿主"
+            android:theme="@style/Theme.EmpLab" />
+        
+        <activity
+            android:name=".TestSecondActivity"
+            android:exported="false"
+            android:label="测试页面二"
+            android:theme="@style/Theme.EmpLab" />
+            
+        <activity
             android:name=".TravelActivity"
             android:exported="false"
             android:label="员工差旅"

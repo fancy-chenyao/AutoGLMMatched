@@ -426,6 +426,11 @@ object CommandHandler {
      */
     /**
      * 处理tap命令 - 点击操作（支持 element 或 index 参数，兼容 x/y）
+     * 新增参数：
+     * - verify_page_change: 是否启用页面变化验证（默认true），为false时跳过PageChangeVerifier
+     * - verify_timeout_ms: 页面变化验证的最大等待时长（默认3000ms）
+     * - verify_stable_window_ms: 页面变化验证的稳定窗口（默认800ms）
+     * - verify_interval_ms: 页面变化验证的轮询间隔（默认100ms）
      */
     private fun handleTap(
         requestId: String,
@@ -503,14 +508,26 @@ object CommandHandler {
                         callback(createErrorResponse("Tap action failed"))
                         return@clickByCoordinateDp
                     }
-                    
-                    // 统一使用 PageChangeVerifier 验证页面变化
+                    // 验证开关与参数
+                    val verifyPageChange = params.optBoolean("verify_page_change", true)
+                    val verifyTimeoutMs = params.optLong("verify_timeout_ms", 3000L)
+                    val verifyStableWindowMs = params.optLong("verify_stable_window_ms", 800L)
+                    val verifyIntervalMs = params.optLong("verify_interval_ms", 100L)
+                    if (!verifyPageChange) {
+                        val data = JSONObject().apply { put("page_change_type", "verification_skipped") }
+                        callback(createSuccessResponse(data))
+                        return@clickByCoordinateDp
+                    }
+                    // 使用 PageChangeVerifier 验证页面变化（稳定窗口版）
                     PageChangeVerifier.verifyActionWithPageChange(
                         handler = Handler(Looper.getMainLooper()),
                         getCurrentActivity = { ActivityTracker.getCurrentActivity() },
                         preActivity = preActivity,
                         preViewTreeHash = preHash,
-                        preWebViewAggHash = preWebHash
+                        preWebViewAggHash = preWebHash,
+                        timeoutMs = verifyTimeoutMs,
+                        intervalMs = verifyIntervalMs,
+                        stableWindowMs = verifyStableWindowMs
                     ) { changed, changeType ->
                         if (changed) {
                             clearCache()
@@ -597,6 +614,11 @@ object CommandHandler {
      */
     /**
      * 处理swipe命令 - 滑动操作（支持 start/end 数组，兼容旧参数）
+     * 新增参数：
+     * - verify_page_change: 是否启用页面变化验证（默认true），为false时跳过PageChangeVerifier
+     * - verify_timeout_ms: 页面变化验证的最大等待时长（默认3000ms）
+     * - verify_stable_window_ms: 页面变化验证的稳定窗口（默认800ms）
+     * - verify_interval_ms: 页面变化验证的轮询间隔（默认100ms）
      */
     private fun handleSwipe(
         requestId: String,
@@ -654,13 +676,26 @@ object CommandHandler {
                     duration = duration.toLong()
                 ) { success ->
                     if (success) {
-                        // 成功后进行页面变化验证
+                        // 验证开关与参数
+                        val verifyPageChange = params.optBoolean("verify_page_change", true)
+                        val verifyTimeoutMs = params.optLong("verify_timeout_ms", 3000L)
+                        val verifyStableWindowMs = params.optLong("verify_stable_window_ms", 800L)
+                        val verifyIntervalMs = params.optLong("verify_interval_ms", 100L)
+                        if (!verifyPageChange) {
+                            val data = JSONObject().apply { put("page_change_type", "verification_skipped") }
+                            callback(createSuccessResponse(data))
+                            return@scrollByTouchDp
+                        }
+                        // 成功后进行页面变化验证（稳定窗口版）
                         PageChangeVerifier.verifyActionWithPageChange(
                             handler = Handler(Looper.getMainLooper()),
                             getCurrentActivity = { ActivityTracker.getCurrentActivity() },
                             preActivity = preActivity,
                             preViewTreeHash = preHash,
-                            preWebViewAggHash = preWebHash
+                            preWebViewAggHash = preWebHash,
+                            timeoutMs = verifyTimeoutMs,
+                            intervalMs = verifyIntervalMs,
+                            stableWindowMs = verifyStableWindowMs
                         ) { changed, changeType ->
                             if (changed) {
                                 clearCache()
@@ -686,6 +721,11 @@ object CommandHandler {
 
     /**
      * 处理input_text/type命令 - 文本输入（支持 element 或 index）
+     * 新增参数：
+     * - verify_page_change: 是否启用页面变化验证（默认true），为false时跳过PageChangeVerifier
+     * - verify_timeout_ms: 页面变化验证的最大等待时长（默认3000ms）
+     * - verify_stable_window_ms: 页面变化验证的稳定窗口（默认800ms）
+     * - verify_interval_ms: 页面变化验证的轮询间隔（默认100ms）
      */
     private fun handleInputText(
         requestId: String,
@@ -749,13 +789,36 @@ object CommandHandler {
                 // 使用ElementController设置输入值
                 ElementController.setInputValue(activity, targetElement.resourceId, text) { success ->
                     if (success) {
-                        // 统一使用 PageChangeVerifier 验证页面变化
+                        // 验证开关与参数
+                        val verifyPageChange = params.optBoolean("verify_page_change", true)
+                        val verifyTimeoutMs = params.optLong("verify_timeout_ms", 3000L)
+                        val verifyStableWindowMs = params.optLong("verify_stable_window_ms", 800L)
+                        val verifyIntervalMs = params.optLong("verify_interval_ms", 100L)
+                        if (!verifyPageChange) {
+                            val targetIndexFinal = if (hasElementArray) {
+                                val stableMap = cachedStableIndexMap
+                                stableMap?.get(targetElement) ?: targetElement.index
+                            } else index
+                            val elementDesc = buildInputTextDescription(targetElement, targetIndexFinal, text)
+                            val data = JSONObject().apply { 
+                                put("page_change_type", "verification_skipped")
+                                put("element_index", targetIndexFinal)
+                                put("message", elementDesc)
+                                put("input_text", text)
+                            }
+                            callback(createSuccessResponse(data))
+                            return@setInputValue
+                        }
+                        // 使用 PageChangeVerifier 验证页面变化（稳定窗口版）
                         PageChangeVerifier.verifyActionWithPageChange(
                             handler = Handler(Looper.getMainLooper()),
                             getCurrentActivity = { ActivityTracker.getCurrentActivity() },
                             preActivity = preActivity,
                             preViewTreeHash = preHash,
-                            preWebViewAggHash = preWebHash
+                            preWebViewAggHash = preWebHash,
+                            timeoutMs = verifyTimeoutMs,
+                            intervalMs = verifyIntervalMs,
+                            stableWindowMs = verifyStableWindowMs
                         ) { changed, changeType ->
                             if (changed) {
                                 smartClearCache("input_text")
@@ -802,6 +865,11 @@ object CommandHandler {
     
     /**
      * 处理double tap命令 - 双击操作（支持element或index）
+     * 新增参数：
+     * - verify_page_change: 是否启用页面变化验证（默认true），为false时跳过PageChangeVerifier
+     * - verify_timeout_ms: 页面变化验证的最大等待时长（默认3000ms）
+     * - verify_stable_window_ms: 页面变化验证的稳定窗口（默认800ms）
+     * - verify_interval_ms: 页面变化验证的轮询间隔（默认100ms）
      */
     private fun handleDoubleTap(
         requestId: String,
@@ -861,12 +929,25 @@ object CommandHandler {
                                 callback(createErrorResponse("Second tap failed"))
                                 return@clickByCoordinateDp
                             }
+                            // 验证开关与参数
+                            val verifyPageChange = params.optBoolean("verify_page_change", true)
+                            val verifyTimeoutMs = params.optLong("verify_timeout_ms", 3000L)
+                            val verifyStableWindowMs = params.optLong("verify_stable_window_ms", 800L)
+                            val verifyIntervalMs = params.optLong("verify_interval_ms", 100L)
+                            if (!verifyPageChange) {
+                                val data = JSONObject().apply { put("page_change_type", "verification_skipped") }
+                                callback(createSuccessResponse(data))
+                                return@clickByCoordinateDp
+                            }
                             PageChangeVerifier.verifyActionWithPageChange(
                                 handler = Handler(Looper.getMainLooper()),
                                 getCurrentActivity = { ActivityTracker.getCurrentActivity() },
                                 preActivity = preActivity,
                                 preViewTreeHash = preHash,
-                                preWebViewAggHash = preWebHash
+                                preWebViewAggHash = preWebHash,
+                                timeoutMs = verifyTimeoutMs,
+                                intervalMs = verifyIntervalMs,
+                                stableWindowMs = verifyStableWindowMs
                             ) { changed, changeType ->
                                 if (changed) {
                                     clearCache()
@@ -888,6 +969,11 @@ object CommandHandler {
     
     /**
      * 处理long press命令 - 长按操作（支持element或index）
+     * 新增参数：
+     * - verify_page_change: 是否启用页面变化验证（默认true），为false时跳过PageChangeVerifier
+     * - verify_timeout_ms: 页面变化验证的最大等待时长（默认3000ms）
+     * - verify_stable_window_ms: 页面变化验证的稳定窗口（默认800ms）
+     * - verify_interval_ms: 页面变化验证的轮询间隔（默认100ms）
      */
     private fun handleLongPress(
         requestId: String,
@@ -941,12 +1027,25 @@ object CommandHandler {
                         callback(createErrorResponse("Long press action failed"))
                         return@longClickByCoordinateDp
                     }
+                    // 验证开关与参数
+                    val verifyPageChange = params.optBoolean("verify_page_change", true)
+                    val verifyTimeoutMs = params.optLong("verify_timeout_ms", 3000L)
+                    val verifyStableWindowMs = params.optLong("verify_stable_window_ms", 800L)
+                    val verifyIntervalMs = params.optLong("verify_interval_ms", 100L)
+                    if (!verifyPageChange) {
+                        val data = JSONObject().apply { put("page_change_type", "verification_skipped") }
+                        callback(createSuccessResponse(data))
+                        return@longClickByCoordinateDp
+                    }
                     PageChangeVerifier.verifyActionWithPageChange(
                         handler = Handler(Looper.getMainLooper()),
                         getCurrentActivity = { ActivityTracker.getCurrentActivity() },
                         preActivity = preActivity,
                         preViewTreeHash = preHash,
-                        preWebViewAggHash = preWebHash
+                        preWebViewAggHash = preWebHash,
+                        timeoutMs = verifyTimeoutMs,
+                        intervalMs = verifyIntervalMs,
+                        stableWindowMs = verifyStableWindowMs
                     ) { changed, changeType ->
                         if (changed) {
                             clearCache()
@@ -1052,6 +1151,11 @@ object CommandHandler {
     
     /**
      * 处理back命令 - 返回键
+     * 新增参数：
+     * - verify_page_change: 是否启用页面变化验证（默认true），为false时跳过PageChangeVerifier
+     * - verify_timeout_ms: 页面变化验证的最大等待时长（默认3000ms）
+     * - verify_stable_window_ms: 页面变化验证的稳定窗口（默认800ms）
+     * - verify_interval_ms: 页面变化验证的轮询间隔（默认100ms）
      */
     private fun handleBack(
         requestId: String,
@@ -1073,13 +1177,26 @@ object CommandHandler {
                 val preWebHash = PageChangeVerifier.computePreWebViewAggHash(activity)
                 NativeController.goBack(activity) { success ->
                     if (success) {
-                        // 成功后进行页面变化验证
+                        // 验证开关与参数
+                        val verifyPageChange = params.optBoolean("verify_page_change", true)
+                        val verifyTimeoutMs = params.optLong("verify_timeout_ms", 3000L)
+                        val verifyStableWindowMs = params.optLong("verify_stable_window_ms", 800L)
+                        val verifyIntervalMs = params.optLong("verify_interval_ms", 100L)
+                        if (!verifyPageChange) {
+                            val data = JSONObject().apply { put("page_change_type", "verification_skipped") }
+                            callback(createSuccessResponse(data))
+                            return@goBack
+                        }
+                        // 成功后进行页面变化验证（稳定窗口版）
                         PageChangeVerifier.verifyActionWithPageChange(
                             handler = Handler(Looper.getMainLooper()),
                             getCurrentActivity = { ActivityTracker.getCurrentActivity() },
                             preActivity = preActivity,
                             preViewTreeHash = preHash,
-                            preWebViewAggHash = preWebHash
+                            preWebViewAggHash = preWebHash,
+                            timeoutMs = verifyTimeoutMs,
+                            intervalMs = verifyIntervalMs,
+                            stableWindowMs = verifyStableWindowMs
                         ) { changed, changeType ->
                             if (changed) {
                                 clearCache()
