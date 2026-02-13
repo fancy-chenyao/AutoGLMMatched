@@ -18,23 +18,37 @@ object PageChangeVerifier {
     private const val TAG = "PageChangeVerifier"
 
     /**
-     * 页面变化动作执行验证函数。
-     * 通过对比动作前后 Activity、原生视图树哈希与 WebView 可视内容哈希，判断是否发生页面变化，并给出页面变化类型。
+     * [显眼提示] 关键参数用途说明
+     * - stableWindowMs：稳定窗口时长（毫秒）。从“最后一次检测到变化”开始，页面需连续稳定至少该时长才进行最终对比。
+     *   用途：过滤点击高亮、ripple、轻动画等瞬时抖动，确保以“稳定后的页面状态”判定是否真正发生页面变化。
+     *   建议：动画较多的页面可设为 800–1000ms；默认 800ms。
      *
-     * 防抖与延迟策略：
-     * - 计算并比较视图树哈希与 WebView 哈希均在开始验证后至少延迟2秒进行（避免瞬时抖动导致误判）。
-     * - 建议将总超时时间设置到3秒，以便在2秒延迟之后仍有1秒的判断窗口。
+     * - timeoutMs：最大等待总时长（毫秒）。若在该时长内始终未达到稳定窗口，则认为“未变化”并返回。
+     *   用途：为验证过程设定上限，避免长时间占用轮询与阻塞。
+     *   建议：普通场景 3000–5000ms；默认 3000ms。
+     *
+     * - intervalMs：轮询间隔（毫秒）。用于定时检查当前 Activity、视图树哈希与 WebView 聚合哈希。
+     *   用途：控制检测粒度与开销；间隔越小越敏感，但CPU开销更高。
+     *   建议：50–150ms；默认 100ms。
+     */
+
+    /**
+     * 页面变化动作执行验证函数（稳定窗口版）
+     * 在动作触发后持续轮询页面状态，若检测到变化则继续等待直至页面进入稳定窗口（minStableMs）；
+     * 最终以“稳定后的状态”与动作前初始状态进行对比，判断是否存在语义上的页面变化，避免动画/按压态等瞬时抖动造成误判。
      *
      * 参数说明：
      * - handler: 主线程 Handler，用于定时轮询页面状态
      * - getCurrentActivity: 提供当前 Activity 的函数
      * - preActivity: 动作前的 Activity
      * - preViewTreeHash: 动作前视图树哈希（可为 null）
-     * - timeoutMs: 超时时间（毫秒，默认 3000ms）
+     * - preWebViewAggHash: 动作前 WebView 聚合视觉哈希（可为 null）
+     * - timeoutMs: 总超时时间（毫秒，默认 3000ms）；在该时间内未进入稳定窗口则返回未变化
      * - intervalMs: 轮询间隔（毫秒，默认 100ms）
-     * - callback: 验证结果回调，返回两个参数：
-     *   1) changed: 是否检测到页面变化
-     *   2) pageChangeType: 页面变化类型，可能为 "activity_switch"、"view_hash_change"、"webview_hash_change" 及其组合（以 _and_ 连接），或 "none"
+     * - stableWindowMs: 稳定窗口（毫秒，默认 800ms）；从最后一次检测到变化起持续稳定达到该窗口，视为稳定
+     * - callback: 验证结果回调，返回：
+     *   1) changed: 是否存在页面变化（以稳定后的状态与初始状态对比）
+     *   2) pageChangeType: 页面变化类型："activity_switch"、"view_hash_change"、"webview_hash_change" 或其 _and_ 组合；未变化为 "none"
      */
     fun verifyActionWithPageChange(
         handler: Handler,
@@ -44,21 +58,23 @@ object PageChangeVerifier {
         preWebViewAggHash: String?,
         timeoutMs: Long = 3000L,
         intervalMs: Long = 100L,
+        stableWindowMs: Long = 800L,
         callback: (Boolean, String) -> Unit
     ) {
         var verificationCompleted = false
         val startTime = System.currentTimeMillis()
-
         val initialActivity = preActivity
         val initialViewTreeHash = preViewTreeHash
         val initialWebViewAggHash = preWebViewAggHash
 
+        var lastChangeTime = startTime
+        var detectedAnyChange = false
+
         val checkRunnable = object : Runnable {
             override fun run() {
                 if (verificationCompleted) return
-
-                val currentTime = System.currentTimeMillis()
-                val elapsed = currentTime - startTime
+                val now = System.currentTimeMillis()
+                val elapsed = now - startTime
 
                 val currentActivity = try {
                     getCurrentActivity()
@@ -67,19 +83,23 @@ object PageChangeVerifier {
                     null
                 }
 
-                val hasActivityChange = currentActivity != initialActivity
+                var changedThisLoop = false
 
-                var hasViewTreeChange = false
+                // Activity 变化
+                val hasActivityChange = currentActivity != initialActivity
+                if (hasActivityChange) {
+                    changedThisLoop = true
+                }
+
+                // 视图树哈希变化
+                var currentViewTreeHash: Int? = null
                 if (initialViewTreeHash != null && currentActivity != null) {
                     try {
                         val rootView = currentActivity.window?.decorView?.rootView
                         if (rootView != null) {
-                            // 延迟500ms后再计算并比较哈希，快速检测UI变化
-                            if (elapsed >= 500L) {
-                                val currentViewTreeHash = calculateViewTreeHash(rootView)
-                                hasViewTreeChange = currentViewTreeHash != initialViewTreeHash
-                            } else {
-                                // 未到500ms延迟，本次循环不进行哈希比较
+                            currentViewTreeHash = calculateViewTreeHash(rootView)
+                            if (currentViewTreeHash != initialViewTreeHash) {
+                                changedThisLoop = true
                             }
                         }
                     } catch (e: Exception) {
@@ -87,25 +107,48 @@ object PageChangeVerifier {
                     }
                 }
 
-                var hasWebViewChange = false
-                if (currentActivity != null && elapsed >= 500L) {
+                // WebView 聚合视觉哈希变化
+                var currentWebViewAggHash: String? = null
+                if (currentActivity != null) {
                     try {
-                        val currentWebViewAggHash = calculateAggregateWebViewHash(currentActivity)
-                        hasWebViewChange = currentWebViewAggHash != initialWebViewAggHash
+                        currentWebViewAggHash = calculateAggregateWebViewHash(currentActivity)
+                        if (!(initialWebViewAggHash == null && currentWebViewAggHash == null)) {
+                            if (currentWebViewAggHash != initialWebViewAggHash) {
+                                changedThisLoop = true
+                            }
+                        }
                     } catch (e: Exception) {
                         Log.w(TAG, "计算WebView哈希时发生异常", e)
                     }
                 }
 
-                val hasPageChange = hasActivityChange || hasViewTreeChange || hasWebViewChange
-                val types = mutableListOf<String>()
-                if (hasActivityChange) types.add("activity_switch")
-                if (hasViewTreeChange) types.add("view_hash_change")
-                if (hasWebViewChange) types.add("webview_hash_change")
-                val changeType = if (types.isEmpty()) "none" else types.joinToString("_and_")
-                if (hasPageChange) {
+                if (changedThisLoop) {
+                    detectedAnyChange = true
+                    lastChangeTime = now
+                }
+
+                val stableDuration = now - lastChangeTime
+                val isStable = stableDuration >= stableWindowMs
+
+                if (isStable) {
+                    // 稳定后，以当前稳定状态与初始状态进行最终对比
+                    val finalTypes = mutableListOf<String>()
+                    if (hasActivityChange) finalTypes.add("activity_switch")
+                    if (initialViewTreeHash != null && currentViewTreeHash != null && currentViewTreeHash != initialViewTreeHash) {
+                        finalTypes.add("view_hash_change")
+                    }
+                    if (!(initialWebViewAggHash == null && currentWebViewAggHash == null)) {
+                        if (currentWebViewAggHash != initialWebViewAggHash) {
+                            finalTypes.add("webview_hash_change")
+                        }
+                    }
+                    val typeStr = if (finalTypes.isEmpty()) "none" else finalTypes.joinToString("_and_")
                     verificationCompleted = true
-                    callback(true, changeType)
+                    if (detectedAnyChange && typeStr != "none") {
+                        callback(true, typeStr)
+                    } else {
+                        callback(false, "none")
+                    }
                 } else if (elapsed >= timeoutMs) {
                     verificationCompleted = true
                     callback(false, "none")
@@ -153,27 +196,31 @@ object PageChangeVerifier {
      * @param view 根视图
      * @return 视图树哈希
      */
+    /**
+     * 计算视图树哈希（包含尺寸、滚动与子树结构）
+     * 引入 scrollX/scrollY 与 translationX/translationY，使滚动与轻动画也被感知
+     */
     private fun calculateViewTreeHash(view: View): Int {
         var hash = view.javaClass.simpleName.hashCode()
         hash = hash * 31 + view.visibility
         hash = hash * 31 + view.isEnabled.hashCode()
-        
-        // 添加位置和大小信息，使哈希更敏感
         hash = hash * 31 + view.width
         hash = hash * 31 + view.height
+        hash = hash * 31 + view.scrollX
+        hash = hash * 31 + view.scrollY
+        hash = hash * 31 + view.translationX.toInt()
+        hash = hash * 31 + view.translationY.toInt()
 
         if (view is TextView) {
             hash = hash * 31 + (view.text?.toString()?.hashCode() ?: 0)
         }
 
         if (view is ViewGroup) {
-            // 包含子元素数量，使结构变化更明显
             hash = hash * 31 + view.childCount
             for (i in 0 until view.childCount) {
                 hash = hash * 31 + calculateViewTreeHash(view.getChildAt(i))
             }
         }
-
         return hash
     }
 

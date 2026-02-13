@@ -132,10 +132,10 @@
     "request_id": "xxxx-uuid",
     "data": {
         "command": "tap",
-        "params": { "element":[x,y] or "index": x }
+        "params": { "element":[x,y] or "index": x, "verify_page_change": true, "verify_timeout_ms": 3000, "verify_stable_window_ms": 800, "verify_interval_ms": 100 }
     }
   }
-- 参数：element、index（可选）
+- 参数：element、index（可选）；verify_page_change（可选，默认true），verify_timeout_ms（可选，默认3000ms），verify_stable_window_ms（可选，默认800ms），verify_interval_ms（可选，默认100ms）
 
 ## swipe 滑动
 - 字典：{
@@ -143,10 +143,10 @@
   "request_id": "xxxx-uuid",
   "data": {
     "command": "swipe",
-    "params": { "start":[x1,y1], "end":[x2,y2], "duration_ms": 300 }
+    "params": { "start":[x1,y1], "end":[x2,y2], "duration_ms": 300, "verify_page_change": true, "verify_timeout_ms": 3000, "verify_stable_window_ms": 800, "verify_interval_ms": 100 }
   }
 }
-- 参数：start、end
+- 参数：start、end；verify_page_change（可选，默认true），verify_timeout_ms（可选，默认3000ms），verify_stable_window_ms（可选，默认800ms），verify_interval_ms（可选，默认100ms）
 
 ## input_text 输入
 - 字典：{
@@ -154,10 +154,10 @@
   "request_id": "xxxx-uuid",
   "data": {
     "command": "input_text",
-    "params": { "text": "xxx", "element":[x,y] or "index": x }
+    "params": { "text": "xxx", "element":[x,y] or "index": x, "verify_page_change": true, "verify_timeout_ms": 3000, "verify_stable_window_ms": 800, "verify_interval_ms": 100 }
   }
 }
-- 参数：element、index（可选）、text；
+- 参数：element、index（可选）、text；verify_page_change（可选，默认true），verify_timeout_ms（可选，默认3000ms），verify_stable_window_ms（可选，默认800ms），verify_interval_ms（可选，默认100ms）
 
 ## back 返回上一页
 - 字典：{
@@ -165,10 +165,10 @@
   "request_id": "xxxx-uuid",
   "data": {
     "command": "back",
-    "params": {}
+    "params": { "verify_page_change": true, "verify_timeout_ms": 3000, "verify_stable_window_ms": 800, "verify_interval_ms": 100 }
   }
 }
-- 参数：无
+- 参数：verify_page_change（可选，默认true），verify_timeout_ms（可选，默认3000ms），verify_stable_window_ms（可选，默认800ms），verify_interval_ms（可选，默认100ms）
 
 ## home 返回主页
 - 字典：{
@@ -187,10 +187,10 @@
   "request_id": "xxxx-uuid",
   "data": {
     "command": "double tap",
-    "params": { "element":[x,y] or "index": x }
+    "params": { "element":[x,y] or "index": x, "verify_page_change": true, "verify_timeout_ms": 3000, "verify_stable_window_ms": 800, "verify_interval_ms": 100 }
   }
 }
-- 参数：element、index（可选）
+- 参数：element、index（可选）；verify_page_change（可选，默认true），verify_timeout_ms（可选，默认3000ms），verify_stable_window_ms（可选，默认800ms），verify_interval_ms（可选，默认100ms）
 
 ## long press 长按
 - 字典：{
@@ -198,10 +198,10 @@
   "request_id": "xxxx-uuid",
   "data": {
     "command": "long press",
-    "params": { "element":[x,y] or "index": x }
+    "params": { "element":[x,y] or "index": x, "verify_page_change": true, "verify_timeout_ms": 3000, "verify_stable_window_ms": 800, "verify_interval_ms": 100 }
   }
 }
-- 参数：element、index（可选）
+- 参数：element、index（可选）；verify_page_change（可选，默认true），verify_timeout_ms（可选，默认3000ms），verify_stable_window_ms（可选，默认800ms），verify_interval_ms（可选，默认100ms）
 
 ## wait 等待
 - 字典：{

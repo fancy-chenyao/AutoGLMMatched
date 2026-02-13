@@ -109,21 +109,31 @@ object PageStableVerifier {
      * @param view 根视图
      * @return 视图树哈希值
      */
+    /**
+     * 递归计算视图树哈希（包含尺寸、滚动与子树结构）
+     * 增强稳定状态识别，对滚动与轻动画引起的变化更敏感
+     */
     private fun calculateViewTreeHash(view: View): Int {
         var hash = view.javaClass.simpleName.hashCode()
         hash = hash * 31 + view.visibility
         hash = hash * 31 + view.isEnabled.hashCode()
+        hash = hash * 31 + view.width
+        hash = hash * 31 + view.height
+        hash = hash * 31 + view.scrollX
+        hash = hash * 31 + view.scrollY
+        hash = hash * 31 + view.translationX.toInt()
+        hash = hash * 31 + view.translationY.toInt()
 
         if (view is TextView) {
             hash = hash * 31 + (view.text?.toString()?.hashCode() ?: 0)
         }
 
         if (view is ViewGroup) {
+            hash = hash * 31 + view.childCount
             for (i in 0 until view.childCount) {
                 hash = hash * 31 + calculateViewTreeHash(view.getChildAt(i))
             }
         }
-
         return hash
     }
 
