@@ -8,6 +8,7 @@ import time
 import logging
 import uuid
 import os
+import aiohttp
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime
 from pathlib import Path
@@ -283,13 +284,23 @@ class WebSocketTools(Tools):
         except Exception as e:
             LoggingUtils.log_error("WebSocketTools", "Failed to export a11y_tree: {error}", error=e)
     
-    async def get_state_async(self, include_screenshot: bool = True) -> Dict[str, Any]:
+    async def get_state_async(
+        self, 
+        include_screenshot: bool = True,
+        stabilize_timeout_ms: int = 3000,
+        stable_window_ms: int = 500
+    ) -> Dict[str, Any]:
         """
         异步获取设备状态
         """
         try:
             get_state_start = time.time()
-            response = await self._send_request_and_wait("get_state", {"include_screenshot": include_screenshot})
+            params = {
+                "include_screenshot": include_screenshot,
+                "stabilize_timeout_ms": stabilize_timeout_ms,
+                "stable_window_ms": stable_window_ms
+            }
+            response = await self._send_request_and_wait("get_state", params)
 
             if response.get("status") == "error":
                 error_msg = response.get("error", "Unknown error")
@@ -345,29 +356,31 @@ class WebSocketTools(Tools):
             LoggingUtils.log_error("WebSocketTools", "Error getting state: {error}", error=e)
             return {"error": "Error", "message": str(e)}
 
-    async def get_state(self, include_screenshot: bool = True) -> Dict[str, Any]:
+    @Tools.ui_action
+    async def get_state(
+        self,
+        stabilize_timeout_ms: int = 3000,
+        stable_window_ms: int = 500,
+        include_screenshot: bool = True
+    ) -> Dict[str, Any]:
         """
-        获取设备状态
+        获取当前设备状态 (UI 树和可选截图)
         
-        Returns:
-            包含 'a11y_tree' 和 'phone_state' 的字典
-        """
-        try:
-            response = await self.get_state_async(include_screenshot=include_screenshot)
-            return response
+        Args:
+            stabilize_timeout_ms: 等待页面稳定的超时时间
+            stable_window_ms: 页面稳定窗口期
+            include_screenshot: 是否包含截图
             
-        except TimeoutError as e:
-            LoggingUtils.log_error("WebSocketTools", "Timeout getting state: {error}", error=e)
-            return {
-                "error": "Timeout",
-                "message": str(e)
-            }
-        except Exception as e:
-            LoggingUtils.log_error("WebSocketTools", "Error getting state: {error}", error=e)
-            return {
-                "error": "Error",
-                "message": str(e)
-            }
+        Returns:
+            包含 UI 树和截图信息的字典
+        """
+        params = {
+            "stabilize_timeout_ms": stabilize_timeout_ms,
+            "stable_window_ms": stable_window_ms,
+            "include_screenshot": include_screenshot
+        }
+        response = await self._send_request_and_wait("get_state", params)
+        return response.get("data", {})
 
     async def refresh_ui(self) -> str:
         """
@@ -416,74 +429,76 @@ class WebSocketTools(Tools):
             return f"Error refreshing UI: {str(e)}"
 
     @Tools.ui_action
-    async def tap_by_index(self, index: int) -> str:
+    async def tap(self, element: Optional[List[int]] = None, index: Optional[int] = None) -> str:
         """
-        通过索引点击元素
+        点击操作
         
         Args:
+            element: [x, y] 坐标点
             index: 元素索引
             
         Returns:
             操作结果消息
         """
         try:
-            LoggingUtils.log_debug("WebSocketTools", "[async] Tapping element at index {index}", index=index)
-            if not self.clickable_elements_cache:
-                return "Error: No UI elements cached. Call get_state first."
-            response = await self._send_request_and_wait("tap_by_index", {"index": index})
+            params = {}
+            if element is not None:
+                params["element"] = element
+                LoggingUtils.log_debug("WebSocketTools", "[async] Tapping at coordinates {element}", element=element)
+            elif index is not None:
+                params["index"] = index
+                LoggingUtils.log_debug("WebSocketTools", "[async] Tapping element at index {index}", index=index)
+            else:
+                return "Error: Either element or index must be provided for tap"
+
+            response = await self._send_request_and_wait("tap", params)
             status = response.get("status") or "success"
+            
             if status == "success":
-                message = response.get("message", f"Tapped element at index {index}")
+                message = response.get("message", f"Tap completed")
                 
+                # 处理事件流和轨迹记录
                 if self._ctx:
-                    element = self._find_element_by_index(index)
-                    if element:
-                        llm_comment = None
-                        if hasattr(self, '_action_comments') and self._action_comments:
-                            for func_call, comment in self._action_comments.items():
-                                if f'tap_by_index({index})' in func_call:
-                                    llm_comment = comment
-                                    break
-                        
-                        if llm_comment and message:
-                            import re
-                            match = re.search(r'\(([^)]+)\)\s+at\s+coordinates\s+\(([^)]+)\)', message)
-                            if match:
-                                class_name = match.group(1)
-                                coords = match.group(2)
-                                final_description = f"Tap element at index {index}: {llm_comment} ({class_name}) at coordinates ({coords})"
-                            else:
-                                final_description = f"{llm_comment} - {message}"
-                        else:
-                            final_description = message
-                        
-                        tap_event = TapActionEvent(
-                            action_type="tap",
-                            description=final_description,
-                            specific_behavior=llm_comment,
-                            x=response.get("x", 0),
-                            y=response.get("y", 0),
-                            element_index=index,
-                            element_text=element.get("text", ""),
-                            element_bounds=element.get("bounds", ""),
-                        )
-                        self._ctx.write_event_to_stream(tap_event)
-                        
-                        if (hasattr(self, '_manual_event_recording') and self._manual_event_recording 
-                            and hasattr(self, '_trajectory') and self._trajectory):
-                            self._trajectory.macro.append(tap_event)
+                    # 如果是索引点击，尝试获取元素信息
+                    element_info = None
+                    if index is not None:
+                        element_info = self._find_element_by_index(index)
+                    
+                    llm_comment = None
+                    if hasattr(self, '_action_comments') and self._action_comments:
+                        action_key = f"tap(index={index})" if index is not None else f"tap(element={element})"
+                        for func_call, comment in self._action_comments.items():
+                            if action_key in func_call:
+                                llm_comment = comment
+                                break
+                    
+                    tap_event = TapActionEvent(
+                        action_type="tap",
+                        description=message,
+                        specific_behavior=llm_comment,
+                        x=response.get("x", element[0] if element else 0),
+                        y=response.get("y", element[1] if element else 0),
+                        element_index=index,
+                        element_text=element_info.get("text", "") if element_info else "",
+                        element_bounds=element_info.get("bounds", "") if element_info else "",
+                    )
+                    self._ctx.write_event_to_stream(tap_event)
                 
                 return message
             else:
                 error_msg = response.get("error", "Unknown error")
                 return f"Error: {error_msg}"
-        except TimeoutError as e:
-            LoggingUtils.log_error("WebSocketTools", "Timeout tapping element at index {index}: {error}", index=index, error=e)
-            return f"Error: Timeout tapping element at index {index}: {str(e)}"
         except Exception as e:
-            LoggingUtils.log_error("WebSocketTools", "Error tapping element at index {index}: {error}", index=index, error=e)
-            return f"Error: Failed to tap element at index {index}: {str(e)}"
-    
+            LoggingUtils.log_error("WebSocketTools", "Error during tap: {error}", error=e)
+            return f"Error: {str(e)}"
+
+    @Tools.ui_action
+    async def tap_by_index(self, index: int) -> str:
+        """
+        通过索引点击元素 (向后兼容)
+        """
+        return await self.tap(index=index)
+
     def _find_element_by_index(self, index: int) -> Optional[Dict[str, Any]]:
         """递归查找指定索引的元素"""
         def find_recursive(elements):
@@ -496,33 +511,121 @@ class WebSocketTools(Tools):
                     return result
             return None
         return find_recursive(self.clickable_elements_cache)
-    
+
+    @Tools.ui_action
+    async def home(self) -> str:
+        """返回主屏幕"""
+        await self._send_request_and_wait("home", {})
+        return "Home action sent"
+
+    @Tools.ui_action
+    async def double_tap(self, element: Optional[List[int]] = None, index: Optional[int] = None) -> str:
+        """双击操作"""
+        try:
+            params = {}
+            if element is not None:
+                params["element"] = element
+            elif index is not None:
+                params["index"] = index
+            else:
+                return "Error: Either element or index must be provided"
+            response = await self._send_request_and_wait("double tap", params)
+            return response.get("message", "Double tap completed")
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @Tools.ui_action
+    async def long_press(self, element: Optional[List[int]] = None, index: Optional[int] = None, duration_ms: int = 1000) -> str:
+        """长按操作"""
+        try:
+            params = {"duration_ms": duration_ms}
+            if element is not None:
+                params["element"] = element
+            elif index is not None:
+                params["index"] = index
+            else:
+                return "Error: Either element or index must be provided"
+            response = await self._send_request_and_wait("long press", params)
+            return response.get("message", "Long press completed")
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @Tools.ui_action
+    async def wait(self, duration: str) -> str:
+        """等待操作，例如 '2 seconds'"""
+        try:
+            response = await self._send_request_and_wait("wait", {"duration": duration})
+            return response.get("message", f"Wait for {duration} completed")
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @Tools.ui_action
+    async def take_over(self, message: str) -> str:
+        """接管操作"""
+        try:
+            response = await self._send_request_and_wait("take_over", {"message": message})
+            return response.get("message", "Take over completed")
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @Tools.ui_action
+    async def note(self, message: str) -> str:
+        """备注操作"""
+        try:
+            response = await self._send_request_and_wait("note", {"message": message})
+            return response.get("message", "Note recorded")
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @Tools.ui_action
+    async def call_api(self, instruction: str) -> str:
+        """调用 API 操作"""
+        try:
+            response = await self._send_request_and_wait("call_api", {"instruction": instruction})
+            return response.get("message", "API called")
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @Tools.ui_action
+    async def interact(self) -> str:
+        """交互操作"""
+        try:
+            response = await self._send_request_and_wait("interact", {})
+            return response.get("message", "Interaction completed")
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @Tools.ui_action
+    async def finish(self, message: str = "") -> str:
+        """结束任务"""
+        try:
+            response = await self._send_request_and_wait("finish", {"message": message})
+            return response.get("message", "Task finished")
+        except Exception as e:
+            return f"Error: {str(e)}"
+
     @Tools.ui_action
     async def swipe(
-        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 300
+        self, start: List[int], end: List[int], duration_ms: int = 300
     ) -> bool:
         """
         滑动操作
         
         Args:
-            start_x: 起始X坐标
-            start_y: 起始Y坐标
-            end_x: 结束X坐标
-            end_y: 结束Y坐标
+            start: 起始坐标 [x, y]
+            end: 结束坐标 [x, y]
             duration_ms: 滑动持续时间（毫秒）
             
         Returns:
             操作是否成功
         """
         try:
-            LoggingUtils.log_debug("WebSocketTools", "[async] Swiping from ({start_x}, {start_y}) to ({end_x}, {end_y})", 
-                                 start_x=start_x, start_y=start_y, end_x=end_x, end_y=end_y)
+            LoggingUtils.log_debug("WebSocketTools", "[async] Swiping from {start} to {end}", 
+                                 start=start, end=end)
             
             response = await self._send_request_and_wait("swipe", {
-                "start_x": start_x,
-                "start_y": start_y,
-                "end_x": end_x,
-                "end_y": end_y,
+                "start": start,
+                "end": end,
                 "duration_ms": duration_ms
             })
             
@@ -530,11 +633,11 @@ class WebSocketTools(Tools):
                 if self._ctx:
                     swipe_event = SwipeActionEvent(
                         action_type="swipe",
-                        description=f"Swipe from ({start_x}, {start_y}) to ({end_x}, {end_y})",
-                        start_x=start_x,
-                        start_y=start_y,
-                        end_x=end_x,
-                        end_y=end_y,
+                        description=f"Swipe from {start} to {end}",
+                        start_x=start[0],
+                        start_y=start[1],
+                        end_x=end[0],
+                        end_y=end[1],
                         duration_ms=duration_ms
                     )
                     self._ctx.write_event_to_stream(swipe_event)
@@ -543,90 +646,29 @@ class WebSocketTools(Tools):
             else:
                 return False
                 
-        except TimeoutError:
-            LoggingUtils.log_error("WebSocketTools", "Timeout during swipe")
-            return False
         except Exception as e:
             LoggingUtils.log_error("WebSocketTools", "Error during swipe: {error}", error=e)
             return False
-    
+
     @Tools.ui_action
-    def drag(
-        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 3000
-    ) -> bool:
-        """
-        拖拽操作
-        
-        Args:
-            start_x: 起始X坐标
-            start_y: 起始Y坐标
-            end_x: 结束X坐标
-            end_y: 结束Y坐标
-            duration_ms: 拖拽持续时间（毫秒）
-            
-        Returns:
-            操作是否成功
-        """
-        try:
-            LoggingUtils.log_debug("WebSocketTools", "Dragging from ({start_x}, {start_y}) to ({end_x}, {end_y})", 
-                                 start_x=start_x, start_y=start_y, end_x=end_x, end_y=end_y)
-            
-            response = self._sync_wait(
-                self._send_request_and_wait("drag", {
-                    "start_x": start_x,
-                    "start_y": start_y,
-                    "end_x": end_x,
-                    "end_y": end_y,
-                    "duration_ms": duration_ms
-                })
-            )
-            
-            if response.get("status") == "success":
-                if self._ctx:
-                    drag_event = DragActionEvent(
-                        action_type="drag",
-                        description=f"Drag from ({start_x}, {start_y}) to ({end_x}, {end_y})",
-                        start_x=start_x,
-                        start_y=start_y,
-                        end_x=end_x,
-                        end_y=end_y,
-                        duration=duration_ms / 1000.0
-                    )
-                    self._ctx.write_event_to_stream(drag_event)
-                
-                return True
-            else:
-                return False
-                
-        except TimeoutError:
-            LoggingUtils.log_error("WebSocketTools", "Timeout during drag")
-            return False
-        except Exception as e:
-            LoggingUtils.log_error("WebSocketTools", "Error during drag: {error}", error=e)
-            return False
-    
-    @Tools.ui_action
-    async def input_text(self, text: str, index: Optional[int] = None) -> str:
+    async def input_text(self, text: str, element: Optional[List[int]] = None, index: Optional[int] = None) -> str:
         """
         输入文本
         
         Args:
             text: 要输入的文本
-            index: 可选的元素索引，如果提供则由移动端直接在该元素中输入文本
+            element: 可选的坐标点 [x, y]
+            index: 可选的元素索引
             
         Returns:
             操作结果消息
         """
         try:
-            LoggingUtils.log_debug("WebSocketTools", "[async] Inputting text: {text} {index_info}", 
-                                 text=text[:50], index_info=f"at index {index}" if index is not None else "")
+            LoggingUtils.log_debug("WebSocketTools", "[async] Inputting text: {text}", text=text[:50])
             
-            encoded_text = base64.b64encode(text.encode()).decode()
-            
-            params = {
-                "text": text,
-                "base64_text": encoded_text
-            }
+            params = {"text": text}
+            if element is not None:
+                params["element"] = element
             if index is not None:
                 params["index"] = index
                 
@@ -634,89 +676,31 @@ class WebSocketTools(Tools):
             
             status = response.get("status", "success")
             if status == "success" or not response.get("error"):
-                message = response.get("message", f"Text input completed: {text[:50]}")
-                
-                llm_comment = None
-                if hasattr(self, '_action_comments') and self._action_comments:
-                    # 调试：输出所有 input_text 相关的注释
-                    input_text_comments = {k: v for k, v in self._action_comments.items() if 'input_text(' in k}
-                    if input_text_comments:
-                        LoggingUtils.log_debug("WebSocketTools", "Available input_text comments: {comments}", 
-                                             comments=list(input_text_comments.keys()))
-                        LoggingUtils.log_debug("WebSocketTools", "Searching for: text[:20]=\"{text}\", index={idx}", 
-                                             text=text[:20], idx=index)
-                    
-                    for func_call, comment in self._action_comments.items():
-                        if 'input_text(' in func_call and f'"{text[:20]}' in func_call:
-                            llm_comment = comment
-                            LoggingUtils.log_debug("WebSocketTools", "✅ Matched by text: {func_call}", func_call=func_call)
-                            break
-                        elif 'input_text(' in func_call and index is not None and f'{index}' in func_call:
-                            llm_comment = comment
-                            LoggingUtils.log_debug("WebSocketTools", "✅ Matched by index: {func_call}", func_call=func_call)
-                            break
-                
-                final_description = f"Input text: '{text[:50]}{'...' if len(text) > 50 else ''}'" + (f" at index {index}" if index is not None else "")
-                input_event = InputTextActionEvent(
-                    action_type="input_text",
-                    description=final_description,
-                    specific_behavior=llm_comment,
-                    text=text,
-                    index=index
-                )
+                message = response.get("message", f"Text input completed")
                 
                 if self._ctx:
+                    input_event = InputTextActionEvent(
+                        action_type="input_text",
+                        description=f"Input text: '{text[:50]}'",
+                        text=text,
+                        index=index
+                    )
                     self._ctx.write_event_to_stream(input_event)
-                
-                if (hasattr(self, '_manual_event_recording') and self._manual_event_recording 
-                    and hasattr(self, '_trajectory') and self._trajectory):
-                    self._trajectory.macro.append(input_event)
                 
                 return message
             else:
                 error_msg = response.get("error", "Unknown error")
                 return f"Error: {error_msg}"
                 
-        except TimeoutError as e:
-            return f"Error: Timeout - {str(e)}"
         except Exception as e:
             LoggingUtils.log_error("WebSocketTools", "Error inputting text: {error}", error=e)
             return f"Error: {str(e)}"
     
     @Tools.ui_action
     async def back(self) -> str:
-        """
-        按返回键
-        
-        Returns:
-            操作结果消息
-        """
-        try:
-            LoggingUtils.log_debug("WebSocketTools", "[async] Pressing back button")
-            
-            response = await self._send_request_and_wait("back", {})
-            
-            if response.get("status") == "success":
-                message = response.get("message", "Back button pressed")
-                
-                if self._ctx:
-                    key_event = KeyPressActionEvent(
-                        action_type="press_key",
-                        description="Press back button",
-                        keycode=4  # Android KEYCODE_BACK
-                    )
-                    self._ctx.write_event_to_stream(key_event)
-                
-                return message
-            else:
-                error_msg = response.get("error", "Unknown error")
-                return f"Error: {error_msg}"
-                
-        except TimeoutError as e:
-            return f"Error: Timeout - {str(e)}"
-        except Exception as e:
-            LoggingUtils.log_error("WebSocketTools", "Error pressing back: {error}", error=e)
-            return f"Error: {str(e)}"
+        """返回上一页"""
+        await self._send_request_and_wait("back", {})
+        return "Back action sent"
     
     @Tools.ui_action
     async def press_key(self, keycode: int) -> str:
@@ -800,31 +784,42 @@ class WebSocketTools(Tools):
             LoggingUtils.log_error("WebSocketTools", "Error starting app: {error}", error=e)
             return f"Error: {str(e)}"
     
-    async def take_screenshot(self, hide_overlay: bool = True) -> Tuple[str, bytes]:
+    async def take_screenshot(self) -> Tuple[str, bytes]:
         """
         截屏
         
-        Args:
-            hide_overlay: 是否隐藏覆盖层
-            
         Returns:
             (image_format, image_data) 元组
         """
         try:
             LoggingUtils.log_debug("WebSocketTools", "[async] Taking screenshot")
             
-            response = await self._send_request_and_wait("take_screenshot", {"hide_overlay": hide_overlay})
+            response = await self._send_request_and_wait("take_screenshot", {})
             
-            if response.get("status") == "success":
-                # 获取截图数据（Base64编码）
+            image_bytes = None
+            img_format = response.get("format", "PNG")
+            
+            # 1. 尝试从 URL 获取
+            screenshot_url = response.get("screenshot_url") or response.get("url")
+            if screenshot_url:
+                LoggingUtils.log_info("WebSocketTools", "Fetching screenshot from URL: {url}", url=screenshot_url)
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(screenshot_url, timeout=5) as resp:
+                            if resp.status == 200:
+                                image_bytes = await resp.read()
+                            else:
+                                LoggingUtils.log_error("WebSocketTools", "Failed to download screenshot, status: {status}", status=resp.status)
+                except Exception as e:
+                    LoggingUtils.log_error("WebSocketTools", "Error downloading screenshot: {error}", error=e)
+
+            # 2. 如果没有 URL 或下载失败，尝试获取 Base64 数据
+            if not image_bytes:
                 image_data_base64 = response.get("image_data", "")
-                if not image_data_base64:
-                    raise ValueError("No image data in response")
-                
-                # 解码Base64
-                image_bytes = base64.b64decode(image_data_base64)
-                img_format = response.get("format", "PNG")
-                
+                if image_data_base64:
+                    image_bytes = base64.b64decode(image_data_base64)
+            
+            if image_bytes:
                 # 存储截图
                 self.screenshots.append({
                     "timestamp": time.time(),
@@ -837,7 +832,7 @@ class WebSocketTools(Tools):
                                      size=len(image_bytes))
                 return (img_format, image_bytes)
             else:
-                error_msg = response.get("error", "Unknown error")
+                error_msg = response.get("error", "No screenshot data or URL received")
                 raise ValueError(f"Failed to take screenshot: {error_msg}")
                 
         except TimeoutError as e:

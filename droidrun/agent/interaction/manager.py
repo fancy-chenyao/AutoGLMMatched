@@ -5,10 +5,10 @@
 
 import asyncio
 import uuid
-from typing import Dict, Callable, Any, Optional
+from typing import Dict, Callable, Any, Optional, List
 from dataclasses import dataclass, field
 import time
-
+from droidrun.agent.utils.logging_utils import LoggingUtils
 from .task_context import TaskExecutionContext
 from .resume_context import ResumeContext
 from .timeout_manager import TimeoutManager
@@ -229,17 +229,13 @@ class InteractionManager:
                     timeout_seconds=timeout_seconds
                 )
                 await self._websocket_send_callback(message)
-                print(f"✅ [InteractionManager] Question sent via WebSocket: {question_id}")
+                LoggingUtils.log_info("InteractionManager", "✅ Question sent via WebSocket: {qid}", qid=question_id)
             except Exception as e:
-                print(f"❌ [InteractionManager] Failed to send question: {e}")
+                LoggingUtils.log_error("InteractionManager", "❌ Failed to send question: {error}", error=e)
         else:
             # 如果没有 WebSocket 回调，只打印日志（用于测试）
-            print(f"📤 [InteractionManager] Question sent (no WebSocket): {question_id}")
-            print(f"   Task: {task_id}")
-            print(f"   Question: {question_text}")
-            print(f"   Type: {question_type}")
-            if options:
-                print(f"   Options: {options}")
+            LoggingUtils.log_info("InteractionManager", "📤 Question created (no WebSocket): {qid}", qid=question_id)
+            LoggingUtils.log_debug("InteractionManager", "   Task: {task_id}, Question: {text}", task_id=task_id, text=question_text)
         
         # 立即返回 question_id（非阻塞）
         return question_id
@@ -269,11 +265,10 @@ class InteractionManager:
         """
         question = self._pending_questions.get(question_id)
         if not question:
-            print(f"⚠️  [InteractionManager] Question not found: {question_id}")
+            LoggingUtils.log_warning("InteractionManager", "⚠️ Question not found: {qid}", qid=question_id)
             return False
         
-        print(f"📥 [InteractionManager] Answer received: {question_id}")
-        print(f"   Answer: {answer}")
+        LoggingUtils.log_info("InteractionManager", "📥 Answer received: {qid}, answer={answer}", qid=question_id, answer=answer)
         
         # 取消超时
         self._timeout_manager.cancel_timeout(question_id)
@@ -294,7 +289,7 @@ class InteractionManager:
                         additional_data
                     )
             except Exception as e:
-                print(f"❌ [InteractionManager] Callback error: {e}")
+                LoggingUtils.log_error("InteractionManager", "❌ Callback error: {error}", error=e)
         
         # 解决 Future
         if question.future and not question.future.done():
@@ -316,7 +311,7 @@ class InteractionManager:
         if not question:
             return
         
-        print(f"⏰ [InteractionManager] Question timeout: {question_id}")
+        LoggingUtils.log_warning("InteractionManager", "⏰ Question timeout: {qid}", qid=question_id)
         
         # 使用默认值
         answer = question.default_value
@@ -326,7 +321,7 @@ class InteractionManager:
             try:
                 question.on_timeout_callback(question.resume_context, answer)
             except Exception as e:
-                print(f"❌ [InteractionManager] Timeout callback error: {e}")
+                LoggingUtils.log_error("InteractionManager", "❌ Timeout callback error: {error}", error=e)
         
         # 解决 Future（使用默认值）
         if question.future and not question.future.done():

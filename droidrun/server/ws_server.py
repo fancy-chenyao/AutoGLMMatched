@@ -358,6 +358,18 @@ class WebSocketServer:
             MessageType.HEARTBEAT,
             self._handle_heartbeat
         )
+
+        # 注册服务器就绪处理器 (接收来自客户端的就绪信号)
+        self.message_router.register_handler(
+            MessageType.SERVER_READY,
+            self._handle_server_ready
+        )
+
+        # 注册命令消息处理器 (支持文档中的 COMMAND 类型)
+        self.message_router.register_handler(
+            MessageType.COMMAND,
+            self._handle_command
+        )
         
         # 注册命令响应处理器
         self.message_router.register_handler(
@@ -621,6 +633,27 @@ class WebSocketServer:
         ack_message = MessageProtocol.create_heartbeat_ack(device_id=device_id)
         await self.session_manager.send_to_device(device_id, ack_message)
     
+    async def _handle_server_ready(self, device_id: str, message: Dict[str, Any]):
+        """处理来自客户端的服务器就绪消息"""
+        LoggingUtils.log_info("WebSocketServer", "Device {device_id} reported server_ready", device_id=device_id)
+        # 可以在这里触发一些初始化逻辑
+
+    async def _handle_command(self, device_id: str, message: Dict[str, Any]):
+        """处理来自客户端的命令消息 (通常是服务端发命令，但协议支持双向)"""
+        data = message.get("data", {})
+        command = data.get("command")
+        LoggingUtils.log_info("WebSocketServer", "Received command {command} from device {device_id}", 
+                             command=command, device_id=device_id)
+
+    async def _handle_user_question(self, device_id: str, message: Dict[str, Any]):
+        """处理来自客户端的用户提问 (APP 问 Server)"""
+        data = message.get("data", {}) or message
+        question_id = data.get("question_id")
+        question = data.get("question")
+        LoggingUtils.log_info("WebSocketServer", "Received user_question from device {device_id}: {question}", 
+                             device_id=device_id, question=question)
+        # TODO: 转发给 Agent 处理
+
     async def _handle_command_response_async(self, device_id: str, message: Dict[str, Any]):
         """
         处理命令响应消息（Phase 3 - 异步版本，用于路由器）
@@ -632,65 +665,29 @@ class WebSocketServer:
         request_id = message.get("request_id", "unknown")
         status = message.get("status", "unknown")
         
-        # 在转发前，若 data 中包含 screenshot_ref/a11y_ref，默认不回填，仅传引用
         try:
             # 忽略中间态回包（accepted），仅在最终 success/error 时完成请求
             if status == "accepted":
                 return
             
-            
             data = message.get("data") or {}
-            # 守护开关：默认不进行任何回填
-            resolve_inline_refs = False
-            if resolve_inline_refs and isinstance(data, dict) and "screenshot_ref" in data and "screenshot_base64" not in data and "image_data" not in data:
-                ref = data.get("screenshot_ref") or {}
-                ref_path = ref.get("path")
-                if ref_path and os.path.exists(ref_path):
-                    # 读取文件并转为base64
-                    import base64
-                    with open(ref_path, "rb") as f:
-                        img_bytes = f.read()
-                    b64 = base64.b64encode(img_bytes).decode("utf-8")
-                    # 兼容两种字段：image_data（WebSocketTools.take_screenshot）与 screenshot_base64（get_state）
-                    data["image_data"] = b64
-                    data["screenshot_base64"] = b64
-                    # 尽量推断格式
-                    fmt = "JPEG" if ref_path.lower().endswith(".jpg") or ref_path.lower().endswith(".jpeg") else "PNG"
-                    data.setdefault("format", fmt)
-                    # 记录尺寸日志（仅长度）
-                    LoggingUtils.log_info("WebSocketServer", "Resolved screenshot_ref to base64: bytes={size}B, b64_len={b64len}", 
-                                          size=len(img_bytes), b64len=len(b64))
-                else:
-                    LoggingUtils.log_warning("WebSocketServer", "screenshot_ref path not found: {path}", path=ref_path)
-            # 解析 a11y_ref -> a11y_tree
-            if resolve_inline_refs and isinstance(data, dict) and "a11y_ref" in data and "a11y_tree" not in data:
-                aref = data.get("a11y_ref") or {}
-                apath = aref.get("path")
-                if apath and os.path.exists(apath):
-                    try:
-                        import json as _json
-                        with open(apath, "r", encoding="utf-8") as f:
-                            a11y = _json.load(f)
-                        # 规范：若文件根是对象且包含 a11y_tree，则取其字段；否则直接作为数组
-                        if isinstance(a11y, dict) and "a11y_tree" in a11y:
-                            data["a11y_tree"] = a11y["a11y_tree"]
-                        else:
-                            data["a11y_tree"] = a11y
-                        LoggingUtils.log_info("WebSocketServer", "Resolved a11y_ref to a11y_tree (nodes approx) ok")
-                    except Exception as e:
-                        LoggingUtils.log_error("WebSocketServer", "Failed to resolve a11y_ref: {error}", error=e)
-                else:
-                    LoggingUtils.log_warning("WebSocketServer", "a11y_ref path not found: {path}", path=apath)
+            
+            # 截图引用处理逻辑
+            # 如果 APP 通过 HTTP 上传后，在 response 中返回了 screenshot_ref 或 url
+            if status == "success" and isinstance(data, dict):
+                # 兼容多种引用方式
+                screenshot_url = data.get("url") or (data.get("screenshot_ref", {}).get("url") if isinstance(data.get("screenshot_ref"), dict) else None)
+                if screenshot_url:
+                    LoggingUtils.log_info("WebSocketServer", "Command response contains screenshot URL: {url}", url=screenshot_url)
+                    # 可以在这里将 URL 注入到响应数据中，方便后续处理
+                    data["screenshot_url"] = screenshot_url
         except Exception as e:
-            LoggingUtils.log_error("WebSocketServer", "Error resolving screenshot_ref: {error}", error=e)
+            LoggingUtils.log_error("WebSocketServer", "Error processing command response: {error}", error=e)
         
         # 转发响应到对应的 WebSocketTools 实例
-        
         if device_id in self._device_tools_map:
             tools_instance = self._device_tools_map[device_id]
-            
             if hasattr(tools_instance, '_handle_response'):
-                # 调用 _handle_response（它会处理异步调度）
                 tools_instance._handle_response(message)
             else:
                 LoggingUtils.log_warning("WebSocketServer", "WebSocketTools instance for device {device_id} has no _handle_response method", 

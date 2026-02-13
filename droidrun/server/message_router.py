@@ -68,8 +68,14 @@ class MessageRouter:
                                  device_id=device_id)
             return False
         
-        # 查找处理器
+        # 查找处理器 (支持大小写兼容匹配，尤其是为了 COMMAND vs command)
         handler = self._handlers.get(message_type)
+        if not handler:
+            # 尝试大小写转换匹配
+            for registered_type, registered_handler in self._handlers.items():
+                if registered_type.lower() == message_type.lower():
+                    handler = registered_handler
+                    break
         
         if handler:
             try:
