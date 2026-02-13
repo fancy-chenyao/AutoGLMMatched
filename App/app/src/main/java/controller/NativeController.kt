@@ -420,6 +420,10 @@ object NativeController {
      * @param duration 滑动持续时间（毫秒）
      * @param callback 回调函数，返回操作是否成功
      */
+    /**
+     * 通过坐标执行滑动/滚动（dp版本）
+     * 将 dp 坐标转换为 px，并对 Y 坐标减去状态栏高度，使事件坐标与窗口内容坐标对齐
+     */
     fun scrollByTouchDp(
         activity: Activity,
         startXDp: Float,
@@ -430,9 +434,9 @@ object NativeController {
         callback: (Boolean) -> Unit
     ) {
         val startXPx = UIUtils.dpToPx(activity, startXDp)
-        val startYPx = UIUtils.dpToPx(activity, startYDp)
+        val startYPx = UIUtils.dpToPx(activity, startYDp) - UIUtils.getStatusBarHeight(activity)
         val endXPx = UIUtils.dpToPx(activity, endXDp)
-        val endYPx = UIUtils.dpToPx(activity, endYDp)
+        val endYPx = UIUtils.dpToPx(activity, endYDp) - UIUtils.getStatusBarHeight(activity)
         scrollByTouch(activity, startXPx, startYPx, endXPx, endYPx, duration, callback)
     }
     

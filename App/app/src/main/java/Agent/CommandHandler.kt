@@ -451,7 +451,7 @@ object CommandHandler {
             fromIndex = true
         } else {
             if (!params.has("x") || !params.has("y")) {
-                Log.w(TAG, "tap命令缺少参数: x=${params.has(\"x\")}, y=${params.has(\"y\")}")
+                Log.w(TAG, "tap命令缺少参数: x=${params.has("x")}, y=${params.has("y")}")
                 callback(createErrorResponse("Missing x or y parameter"))
                 return
             }

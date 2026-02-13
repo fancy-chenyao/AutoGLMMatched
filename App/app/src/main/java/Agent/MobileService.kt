@@ -40,7 +40,6 @@ class MobileService : Service() {
 
     private val binder = LocalBinder()
     private lateinit var wm: WindowManager
-    private var mClient: MobileGPTClient? = null  // 保留旧客户端用于向后兼容
     private var wsClient: WebSocketClient? = null  // WebSocket客户端
     private var wsListener: WebSocketClient.WebSocketListener? = null
     private lateinit var mSpeech: MobileGPTSpeechRecognizer
@@ -233,9 +232,18 @@ class MobileService : Service() {
      * 发送回答
      */
     fun sendAnswer(infoName: String, question: String, answer: String) {
-        val qaString = "$infoName\\$question\\$answer"
-        val message = MobileGPTMessage().createQAMessage(qaString)
-        mClient?.sendMessage(message)
+        try {
+            val message = org.json.JSONObject().apply {
+                put("type", MessageProtocol.MessageType.USER_ANSWER)
+                put("info_name", infoName)
+                put("question", question)
+                put("answer", answer)
+                put("timestamp", System.currentTimeMillis())
+            }
+            wsClient?.sendMessage(message)
+        } catch (e: Exception) {
+            Log.e(TAG, "发送答案失败", e)
+        }
     }
 
     /**
@@ -259,8 +267,7 @@ class MobileService : Service() {
             wsClient = null
             wsListener = null
             
-            // 清理旧客户端（向后兼容）
-            mClient?.disconnect()
+            // 旧客户端已移除，无需清理
             
             // 清理悬浮窗资源
             if (::agentFloatingWindow.isInitialized) {

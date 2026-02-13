@@ -36,3 +36,5 @@ droidrun.yaml
 .gradle/
 a11y_exports/
 experiences/
+/App/Log/
+.trae/
