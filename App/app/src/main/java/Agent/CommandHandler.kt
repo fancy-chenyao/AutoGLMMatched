@@ -110,42 +110,28 @@ object CommandHandler {
         
         when (command) {
             "take_screenshot" -> {
-                // 单独截图命令：HTTP上传后通过WS返回引用
-                if (activity == null) {
-                    protectedCallback(createErrorResponse("No active activity"))
-                    return
-                }
-                Handler(Looper.getMainLooper()).post {
-                    try {
-                        val t0 = System.currentTimeMillis()
-                        takeScreenshotAsync(activity) { bitmap ->
-                            if (bitmap != null && !bitmap.isRecycled) {
-                                // 在后台线程执行网络上传，避免 NetworkOnMainThreadException
-                                Thread {
-                                    val uploadResp = HttpUploader.uploadBitmap(activity, bitmap, requestId)
-                                    Handler(Looper.getMainLooper()).post {
-                                        if (uploadResp != null && uploadResp.optString("status") == "success") {
-                                            val ref = JSONObject().apply {
-                                                put("file_id", uploadResp.optString("file_id"))
-                                                put("path", uploadResp.optString("path"))
-                                                put("url", uploadResp.optString("url"))
-                                                put("mime", uploadResp.optString("mime"))
-                                                put("size", uploadResp.optInt("size"))
-                                            }
-                                            val data = JSONObject().apply { put("screenshot_ref", ref) }
-                                            protectedCallback(createSuccessResponse(data))
-                                        } else {
-                                            protectedCallback(createErrorResponse("Upload screenshot failed"))
-                                        }
-                                    }
-                                }.start()
-                            } else {
-                                protectedCallback(createErrorResponse("Failed to take screenshot"))
+                val handler = Handler(Looper.getMainLooper())
+                val stabilizeTimeout = params.optLong("stabilize_timeout_ms", 5000L)
+                val stableWindow = params.optLong("stable_window_ms", 500L)
+                val waitStart = System.currentTimeMillis()
+                PageStableVerifier.waitUntilStable(
+                    handler = handler,
+                    getCurrentActivity = { ActivityTracker.getCurrentActivity() },
+                    timeoutMs = stabilizeTimeout,
+                    minStableMs = stableWindow,
+                    intervalMs = 100L
+                ) {
+                    val waitedMs = System.currentTimeMillis() - waitStart
+                    Log.d(TAG, "截图前页面稳定等待耗时: ${waitedMs}ms (timeout=${stabilizeTimeout}ms, stable_window=${stableWindow}ms)")
+                    val current = ActivityTracker.getCurrentActivity() ?: activity
+                    handleTakeScreenshot(requestId, params, current) { resp ->
+                        try {
+                            if (resp.optString("status") == "success") {
+                                resp.put("wait_stable_ms", waitedMs)
                             }
+                        } finally {
+                            protectedCallback(resp)
                         }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "处理截图命令异常", e)
-                        protectedCallback(createErrorResponse("Exception: ${e.message}"))
                     }
                 }
             }
@@ -209,6 +195,61 @@ object CommandHandler {
             else -> {
                 Log.w(TAG, "未知命令: $command")
                 protectedCallback(createErrorResponse("Unknown command: $command"))
+            }
+        }
+    }
+    
+    /**
+     * 获取截图（纯截图上传版）
+     * 仅负责截取当前页面并上传，页面稳定验证由调用方在函数外执行。
+     * 参数：
+     * - requestId: 请求ID
+     * - params: 调用参数（保留扩展，如 include_meta）
+     * - activity: 当前Activity（若为空则返回错误）
+     * - callback: 结果回调（status=success 时返回 screenshot_ref）
+     */
+    private fun handleTakeScreenshot(
+        requestId: String,
+        params: JSONObject,
+        activity: Activity?,
+        callback: (JSONObject) -> Unit
+    ) {
+        if (activity == null) {
+            callback(createErrorResponse("No active activity"))
+            return
+        }
+        val current = ActivityTracker.getCurrentActivity() ?: activity
+        Handler(Looper.getMainLooper()).post {
+            try {
+                takeScreenshotAsync(current) { bitmap ->
+                    if (bitmap != null && !bitmap.isRecycled) {
+                        Thread {
+                            val uploadResp = HttpUploader.uploadBitmap(current, bitmap, requestId)
+                            Handler(Looper.getMainLooper()).post {
+                                if (uploadResp != null && uploadResp.optString("status") == "success") {
+                                    val ref = JSONObject().apply {
+                                        put("file_id", uploadResp.optString("file_id"))
+                                        put("path", uploadResp.optString("path"))
+                                        put("url", uploadResp.optString("url"))
+                                        put("mime", uploadResp.optString("mime"))
+                                        put("size", uploadResp.optInt("size"))
+                                    }
+                                    val data = JSONObject().apply { 
+                                        put("screenshot_ref", ref)
+                                    }
+                                    callback(createSuccessResponse(data))
+                                } else {
+                                    callback(createErrorResponse("Upload screenshot failed"))
+                                }
+                            }
+                        }.start()
+                    } else {
+                        callback(createErrorResponse("Failed to take screenshot"))
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "处理截图命令异常", e)
+                callback(createErrorResponse("Exception: ${e.message}"))
             }
         }
     }
