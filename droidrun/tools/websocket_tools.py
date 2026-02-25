@@ -237,29 +237,20 @@ class WebSocketTools(Tools):
             LoggingUtils.log_error("WebSocketTools", "Error handling response for request {rid}: {err}", 
                                  rid=request_id, err=e)
     
-    def _sync_wait(self, coro):
-        """
-        同步等待异步操作
-        
-        Args:
-            coro: 协程对象
-            
-        Returns:
-            协程的返回值
-        """
+    def _sync_wait(self, coroutine):
+        """同步等待协程完成（仅用于兼容性）"""
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                import concurrent.futures
-                future = asyncio.run_coroutine_threadsafe(coro, loop)
-                try:
-                    return future.result(timeout=self.timeout)
-                except concurrent.futures.TimeoutError:
-                    raise TimeoutError(f"Operation timed out after {self.timeout} seconds")
+                # 如果当前线程已有运行中的 loop，使用 run_coroutine_threadsafe
+                import threading
+                future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+                return future.result()
             else:
-                return loop.run_until_complete(coro)
-        except RuntimeError:
-            return asyncio.run(coro)
+                return loop.run_until_complete(coroutine)
+        except Exception as e:
+            LoggingUtils.log_error("WebSocketTools", "Sync wait error: {error}", error=e)
+            raise
     
     def _export_a11y_tree_to_json(self, a11y_tree: List[Dict[str, Any]]) -> None:
         """
@@ -319,6 +310,10 @@ class WebSocketTools(Tools):
                         filtered_element["children"] = filter_children_recursive(element["children"])
                     filtered_elements.append(filtered_element)
                 self.clickable_elements_cache = filtered_elements
+                
+                # 记录顶层元素名称
+                top_element_names = [e.get("text") or e.get("className") for e in filtered_elements]
+                LoggingUtils.log_debug("WebSocketTools", "A11y tree top elements: {names}", names=top_element_names)
                 
                 self._export_a11y_tree_to_json(filtered_elements)
             
@@ -500,22 +495,22 @@ class WebSocketTools(Tools):
     
     @Tools.ui_action
     async def swipe(
-        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 300
+        self, start: List[int], end: List[int], duration_ms: int = 300
     ) -> bool:
         """
         滑动操作
         
         Args:
-            start_x: 起始X坐标
-            start_y: 起始Y坐标
-            end_x: 结束X坐标
-            end_y: 结束Y坐标
+            start: 起始坐标 [x, y]
+            end: 结束坐标 [x, y]
             duration_ms: 滑动持续时间（毫秒）
             
         Returns:
             操作是否成功
         """
         try:
+            start_x, start_y = start[0], start[1]
+            end_x, end_y = end[0], end[1]
             LoggingUtils.log_debug("WebSocketTools", "[async] Swiping from ({start_x}, {start_y}) to ({end_x}, {end_y})", 
                                  start_x=start_x, start_y=start_y, end_x=end_x, end_y=end_y)
             
@@ -552,35 +547,135 @@ class WebSocketTools(Tools):
             return False
     
     @Tools.ui_action
-    def drag(
-        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 3000
+    async def tap(self, element: Optional[List[int]] = None, index: Optional[int] = None) -> str:
+        """
+        点击操作 (坐标或索引)
+        """
+        if index is not None:
+            return await self.tap_by_index(index)
+        
+        if not element or len(element) < 2:
+            return "Error: No coordinates or index provided for tap"
+            
+        x, y = element[0], element[1]
+        try:
+            LoggingUtils.log_debug("WebSocketTools", "[async] Tapping at ({x}, {y})", x=x, y=y)
+            
+            response = await self._send_request_and_wait("tap", {"x": x, "y": y})
+            
+            if response.get("status") == "success":
+                message = response.get("message", f"Tapped at ({x}, {y})")
+                
+                if self._ctx:
+                    tap_event = TapActionEvent(
+                        action_type="tap",
+                        description=f"Tap at ({x}, {y})",
+                        x=x,
+                        y=y
+                    )
+                    self._ctx.write_event_to_stream(tap_event)
+                
+                return message
+            else:
+                error_msg = response.get("error", "Unknown error")
+                return f"Error: {error_msg}"
+        except Exception as e:
+            LoggingUtils.log_error("WebSocketTools", "Error during tap: {error}", error=e)
+            return f"Error: {str(e)}"
+
+    @Tools.ui_action
+    async def double_tap(self, element: Optional[List[int]] = None, index: Optional[int] = None) -> str:
+        """
+        双击操作
+        """
+        if index is not None:
+            # 如果是索引，先获取坐标
+            elem = self._find_element_by_index(index)
+            if elem and "bounds" in elem:
+                # 解析 bounds "left, top, right, bottom" 并计算中心点
+                try:
+                    b = [int(v.strip()) for v in elem["bounds"].split(",")]
+                    element = [(b[0] + b[2]) // 2, (b[1] + b[3]) // 2]
+                except:
+                    pass
+        
+        if not element or len(element) < 2:
+            return "Error: No coordinates or index provided for double tap"
+            
+        x, y = element[0], element[1]
+        try:
+            LoggingUtils.log_debug("WebSocketTools", "[async] Double tapping at ({x}, {y})", x=x, y=y)
+            response = await self._send_request_and_wait("double_tap", {"x": x, "y": y})
+            return response.get("message", f"Double tapped at ({x}, {y})")
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @Tools.ui_action
+    async def long_press(self, element: Optional[List[int]] = None, index: Optional[int] = None, duration_ms: int = 1000) -> str:
+        """
+        长按操作
+        """
+        if index is not None:
+            elem = self._find_element_by_index(index)
+            if elem and "bounds" in elem:
+                try:
+                    b = [int(v.strip()) for v in elem["bounds"].split(",")]
+                    element = [(b[0] + b[2]) // 2, (b[1] + b[3]) // 2]
+                except:
+                    pass
+        
+        if not element or len(element) < 2:
+            return "Error: No coordinates or index provided for long press"
+            
+        x, y = element[0], element[1]
+        try:
+            LoggingUtils.log_debug("WebSocketTools", "[async] Long pressing at ({x}, {y}) for {duration}ms", x=x, y=y, duration=duration_ms)
+            response = await self._send_request_and_wait("long_press", {"x": x, "y": y, "duration_ms": duration_ms})
+            return response.get("message", f"Long pressed at ({x}, {y})")
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @Tools.ui_action
+    async def home(self) -> str:
+        """回到主屏幕"""
+        try:
+            response = await self._send_request_and_wait("home", {})
+            return response.get("message", "Home button pressed")
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    async def wait(self, duration: str) -> str:
+        """等待"""
+        try:
+            # 解析 "x seconds"
+            import re
+            match = re.search(r'(\d+)', duration)
+            seconds = int(match.group(1)) if match else 1
+            await asyncio.sleep(seconds)
+            return f"Waited for {seconds} seconds"
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    @Tools.ui_action
+    async def drag(
+        self, start: List[int], end: List[int], duration_ms: int = 3000
     ) -> bool:
         """
         拖拽操作
-        
-        Args:
-            start_x: 起始X坐标
-            start_y: 起始Y坐标
-            end_x: 结束X坐标
-            end_y: 结束Y坐标
-            duration_ms: 拖拽持续时间（毫秒）
-            
-        Returns:
-            操作是否成功
         """
         try:
-            LoggingUtils.log_debug("WebSocketTools", "Dragging from ({start_x}, {start_y}) to ({end_x}, {end_y})", 
+            start_x, start_y = start[0], start[1]
+            end_x, end_y = end[0], end[1]
+            LoggingUtils.log_debug("WebSocketTools", "[async] Dragging from ({start_x}, {start_y}) to ({end_x}, {end_y})", 
                                  start_x=start_x, start_y=start_y, end_x=end_x, end_y=end_y)
             
-            response = self._sync_wait(
-                self._send_request_and_wait("drag", {
-                    "start_x": start_x,
-                    "start_y": start_y,
-                    "end_x": end_x,
-                    "end_y": end_y,
-                    "duration_ms": duration_ms
-                })
-            )
+            response = await self._send_request_and_wait("drag", {
+                "start_x": start_x,
+                "start_y": start_y,
+                "end_x": end_x,
+                "end_y": end_y,
+                "duration_ms": duration_ms
+            })
             
             if response.get("status") == "success":
                 if self._ctx:
@@ -598,27 +693,29 @@ class WebSocketTools(Tools):
                 return True
             else:
                 return False
-                
-        except TimeoutError:
-            LoggingUtils.log_error("WebSocketTools", "Timeout during drag")
-            return False
         except Exception as e:
             LoggingUtils.log_error("WebSocketTools", "Error during drag: {error}", error=e)
             return False
-    
+
     @Tools.ui_action
-    async def input_text(self, text: str, index: Optional[int] = None) -> str:
+    async def input_text(self, text: str, element: Optional[List[int]] = None, index: Optional[int] = None) -> str:
         """
         输入文本
         
         Args:
             text: 要输入的文本
+            element: 可选的元素坐标 [x, y]，如果提供则先点击该坐标
             index: 可选的元素索引，如果提供则由移动端直接在该元素中输入文本
             
         Returns:
             操作结果消息
         """
         try:
+            # 如果提供了坐标但没提供索引，先点击坐标
+            if element and index is None:
+                await self.tap(element=element)
+                await asyncio.sleep(0.5)
+
             LoggingUtils.log_debug("WebSocketTools", "[async] Inputting text: {text} {index_info}", 
                                  text=text[:50], index_info=f"at index {index}" if index is not None else "")
             

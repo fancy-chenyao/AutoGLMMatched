@@ -15,13 +15,8 @@ AUTOGLM_PHONE = AgentPersona(
         "AutoGLM native actions", "Efficient task execution"
     ],
     allowed_tools=[
-        Tools.do.__name__,
-        Tools.finish.__name__,
-        "tap",
-        "swipe",
-        "input_text",
-        "drag",
-        "start_app",
+        "do",
+        "finish",
     ],
     required_context=[
         "ui_state",
@@ -29,7 +24,7 @@ AUTOGLM_PHONE = AgentPersona(
     ],
     user_prompt="""{goal}""",
 
-    system_prompt="""今天的日期是: """ + formatted_date + """
+    system_prompt="""今天的日期是: {formatted_date}
 你是一个智能体分析专家，可以根据操作历史和当前状态图执行一系列操作来完成任务。
 你必须严格按照要求输出以下格式：
 <think>{think}</think>

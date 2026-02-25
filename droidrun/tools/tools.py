@@ -196,7 +196,7 @@ class Tools(ABC):
         pass
 
     @abstractmethod
-    async def take_screenshot(self) -> Tuple[str, bytes]:
+    async def take_screenshot(self, hide_overlay: bool = True) -> Tuple[str, bytes]:
         """
         Take a screenshot of the device.
         """
@@ -479,13 +479,14 @@ def describe_tools(tools: Tools, exclude_tools: Optional[List[str]] = None) -> D
 
     description = {
         # UI interaction
-        "swipe": tools.Swipe,
-        "input_text": tools.Type,
+        "swipe": tools.swipe,
+        "input_text": tools.input_text,
         "press_key": tools.press_key,
-        "drag": tools.Drag,
-        "tap": tools.Tap,
+        "tap_by_index": tools.tap_by_index,
+        "drag": tools.drag,
+        "tap": tools.tap,
         # App management
-        "start_app": tools.Launch,
+        "start_app": tools.start_app,
         "list_packages": tools.list_packages,
         # state management
         "remember": tools.remember,
