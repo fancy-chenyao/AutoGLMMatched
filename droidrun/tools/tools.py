@@ -151,7 +151,7 @@ class Tools(ABC):
 
     @abstractmethod
     async def swipe(
-        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 300
+        self, start: List[int], end: List[int], duration_ms: int = 300
     ) -> bool:
         """
         Swipe from the given start coordinates to the given end coordinates.
@@ -160,7 +160,7 @@ class Tools(ABC):
 
     @abstractmethod
     async def drag(
-        self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 3000
+        self, start: List[int], end: List[int], duration_ms: int = 3000
     ) -> bool:
         """
         Drag from the given start coordinates to the given end coordinates.
@@ -168,19 +168,9 @@ class Tools(ABC):
         pass
 
     @abstractmethod
-    async def input_text(self, text: str, index: Optional[int] = None) -> str:
+    async def input_text(self, text: str, element: Optional[List[int]] = None, index: Optional[int] = None) -> str:
         """
         Input the given text into an input field.
-        
-        Args:
-            text: Text to input
-            index: Optional element index to target specific input field.
-                  If provided, will directly input text into that element without needing to tap first.
-                  Recommended usage: input_text("your text", element_index) for better efficiency.
-        
-        Examples:
-            input_text("Hello")  # Input into currently focused field
-            input_text("Beijing", 5)  # Input "Beijing" directly into element at index 5
         """
         pass
 
@@ -239,6 +229,197 @@ class Tools(ABC):
         Complete the tool. This is used to indicate that the tool has completed its task.
         """
         pass
+
+    async def home(self) -> str:
+        """
+        Press the home button.
+        """
+        return await self.press_key(3)  # Default Android Home keycode
+
+    async def wait(self, duration: str = "2 seconds") -> str:
+        """
+        Wait for a specified duration.
+        """
+        try:
+            seconds = float(duration.split()[0])
+        except (ValueError, IndexError):
+            seconds = 2.0
+        await asyncio.sleep(seconds)
+        return f"Waited for {seconds} seconds"
+
+    async def interact(self) -> str:
+        """
+        Trigger an interaction when multiple options are available.
+        """
+        return "Interaction triggered. Please specify your choice."
+
+    async def note(self, message: str) -> str:
+        """
+        Record information about the current page.
+        """
+        return f"Note recorded: {message}"
+
+    async def call_api(self, instruction: str) -> str:
+        """
+        Call an AI API to summarize or comment on the current page.
+        """
+        return f"API called with instruction: {instruction}"
+
+    async def take_over(self, message: str) -> str:
+        """
+        Request user assistance for login or verification.
+        """
+        return f"Take over requested: {message}"
+
+    async def double_tap(self, element: Optional[List[int]] = None, index: Optional[int] = None) -> str:
+        """
+        Double tap on a specific point or element.
+        """
+        # Default implementation: two taps
+        await self.tap(element=element, index=index)
+        await asyncio.sleep(0.1)
+        return await self.tap(element=element, index=index)
+
+    async def long_press(self, element: Optional[List[int]] = None, index: Optional[int] = None, duration_ms: int = 1000) -> str:
+        """
+        Long press on a specific point or element.
+        """
+        # Default implementation: use drag with same start and end
+        if element:
+            await self.drag(start=element, end=element, duration_ms=duration_ms)
+            return f"Long pressed at {element}"
+        return "Long press failed: no element or index provided"
+
+    # --- AutoGLM Compatible Methods ---
+
+    async def do(self, action: str, **kwargs) -> Any:
+        """
+        AutoGLM style action dispatcher. Execute a single operation on the device.
+        
+        Args:
+            action: The type of action (e.g., "Launch", "Tap", "Type", "Swipe", "Back", "Home", "Wait").
+            **kwargs: Action-specific arguments (e.g., app="Name", element=[x,y], text="txt", start=[x,y], end=[x,y]).
+            
+        Examples:
+            do(action="Tap", element=[500,500])
+            do(action="Launch", app="Settings")
+            do(action="Type", text="Hello")
+        """
+        action_lower = action.lower().replace(" ", "").replace("_", "")
+        
+        if action_lower == "tap":
+            return await self.Tap(**kwargs)
+        elif action_lower in ["type", "inputtext", "typename"]:
+            return await self.Type(**kwargs)
+        elif action_lower == "swipe":
+            return await self.Swipe(**kwargs)
+        elif action_lower == "back":
+            return await self.Back(**kwargs)
+        elif action_lower == "home":
+            return await self.Home(**kwargs)
+        elif action_lower == "wait":
+            return await self.Wait(**kwargs)
+        elif action_lower == "doubletap":
+            return await self.DoubleTap(**kwargs)
+        elif action_lower == "longpress":
+            return await self.LongPress(**kwargs)
+        elif action_lower == "scroll":
+            # Map scroll to swipe if not explicitly implemented
+            direction = kwargs.get("direction", "down").lower()
+            if direction == "down":
+                return await self.Swipe(start=[500, 800], end=[500, 200])
+            elif direction == "up":
+                return await self.Swipe(start=[500, 200], end=[500, 800])
+            elif direction == "left":
+                return await self.Swipe(start=[800, 500], end=[200, 500])
+            elif direction == "right":
+                return await self.Swipe(start=[200, 500], end=[800, 500])
+        elif action_lower == "drag":
+            return await self.Drag(**kwargs)
+        elif action_lower in ["launch", "startapp"]:
+            app = kwargs.get("app") or kwargs.get("package")
+            if app:
+                return await self.Launch(app=app)
+        elif action_lower == "takeover":
+            return await self.TakeOver(**kwargs)
+        elif action_lower == "interact":
+            return await self.Interact(**kwargs)
+        elif action_lower == "note":
+            return await self.Note(**kwargs)
+        elif action_lower == "callapi":
+            return await self.CallApi(**kwargs)
+            
+        raise ValueError(f"Unknown AutoGLM action: {action}")
+
+    async def finish(self, message: str = "") -> None:
+        """
+        AutoGLM style finish action to terminate the program and optionally print a message.
+        e.g. finish(message="Task completed.")
+        """
+        await self.complete(success=True, reason=message)
+
+    # Individual AutoGLM actions as methods (capitalized)
+    async def Tap(self, element: Optional[List[int]] = None, index: Optional[int] = None, **kwargs) -> str:
+        # Support both element and index as in AutoGLM
+        idx = index or kwargs.get("index")
+        elem = element or kwargs.get("element")
+        return await self.tap(element=elem, index=idx)
+
+    async def Swipe(self, start: List[int], end: List[int], duration_ms: int = 300, **kwargs) -> bool:
+        return await self.swipe(start=start, end=end, duration_ms=duration_ms)
+
+    async def InputText(self, text: str = "", element: Optional[List[int]] = None, index: Optional[int] = None, **kwargs) -> str:
+        txt = text or kwargs.get("text", "")
+        idx = index or kwargs.get("index")
+        elem = element or kwargs.get("element")
+        return await self.input_text(text=txt, element=elem, index=idx)
+    
+    async def Type(self, text: str = "", **kwargs) -> str:
+        txt = text or kwargs.get("text", "")
+        return await self.input_text(text=txt)
+
+    async def Back(self, **kwargs) -> str:
+        return await self.back()
+
+    async def Home(self, **kwargs) -> str:
+        return await self.home()
+
+    async def Wait(self, duration: str = "2 seconds", **kwargs) -> str:
+        dur = duration or kwargs.get("duration", "2 seconds")
+        return await self.wait(duration=dur)
+
+    async def DoubleTap(self, element: Optional[List[int]] = None, index: Optional[int] = None, **kwargs) -> str:
+        idx = index or kwargs.get("index")
+        elem = element or kwargs.get("element")
+        return await self.double_tap(element=elem, index=idx)
+
+    async def LongPress(self, element: Optional[List[int]] = None, index: Optional[int] = None, duration_ms: int = 1000, **kwargs) -> str:
+        idx = index or kwargs.get("index")
+        elem = element or kwargs.get("element")
+        dur = duration_ms or kwargs.get("duration_ms", 1000)
+        return await self.long_press(element=elem, index=idx, duration_ms=dur)
+
+    async def Drag(self, start: List[int], end: List[int], duration_ms: int = 3000, **kwargs) -> bool:
+        return await self.drag(start=start, end=end, duration_ms=duration_ms)
+
+    async def Launch(self, app: str = "", **kwargs) -> str:
+        pkg = app or kwargs.get("app") or kwargs.get("package", "")
+        return await self.start_app(package=pkg)
+    
+    async def TakeOver(self, message: str = "", **kwargs) -> str:
+        msg = message or kwargs.get("message", "")
+        return await self.take_over(message=msg)
+
+    async def Interact(self, **kwargs) -> str:
+        return await self.interact()
+
+    async def Note(self, message: str = "", **kwargs) -> str:
+        msg = message or kwargs.get("message", "")
+        return await self.note(message=msg)
+
+    async def CallApi(self, instruction: str = "", **kwargs) -> str:
+        inst = instruction or kwargs.get("instruction", "")
+        return await self.call_api(instruction=inst)
     
     async def ask_user(
         self,
@@ -298,19 +479,38 @@ def describe_tools(tools: Tools, exclude_tools: Optional[List[str]] = None) -> D
 
     description = {
         # UI interaction
-        "swipe": tools.swipe,
-        "input_text": tools.input_text,
+        "swipe": tools.Swipe,
+        "input_text": tools.Type,
         "press_key": tools.press_key,
-        "tap_by_index": tools.tap_by_index,
-        "drag": tools.drag,
+        "drag": tools.Drag,
+        "tap": tools.Tap,
         # App management
-        "start_app": tools.start_app,
+        "start_app": tools.Launch,
         "list_packages": tools.list_packages,
         # state management
         "remember": tools.remember,
         "complete": tools.complete,
         # User interaction (Phase 3: Interactive Execution)
         "ask_user": tools.ask_user,
+        
+        # --- AutoGLM Compatible Actions ---
+        "do": tools.do,
+        "finish": tools.finish,
+        "Tap": tools.Tap,
+        "Swipe": tools.Swipe,
+        "InputText": tools.InputText,
+        "Type": tools.Type,
+        "Back": tools.Back,
+        "Home": tools.Home,
+        "Wait": tools.Wait,
+        "DoubleTap": tools.DoubleTap,
+        "LongPress": tools.LongPress,
+        "Drag": tools.Drag,
+        "Launch": tools.Launch,
+        "TakeOver": tools.TakeOver,
+        "Interact": tools.Interact,
+        "Note": tools.Note,
+        "CallApi": tools.CallApi,
     }
 
     # Remove excluded tools

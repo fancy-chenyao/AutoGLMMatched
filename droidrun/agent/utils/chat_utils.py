@@ -299,6 +299,30 @@ def parse_persona_description(personas) -> str:
     return descriptions
 
 
+def clean_code(code_str: str) -> str:
+    """清理代码块中的缩进问题，移除最小公共缩进"""
+    if not code_str:
+        return ""
+    
+    # 移除每一行开头的多余空格（如果有的话），但保持相对缩进
+    lines = code_str.split('\n')
+    if not lines:
+        return ""
+        
+    # 找到最小的公共缩进（忽略空行）
+    min_indent = None
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped:
+            indent = len(line) - len(stripped)
+            if min_indent is None or indent < min_indent:
+                min_indent = indent
+    
+    if min_indent is not None:
+        lines = [line[min_indent:] if len(line) >= min_indent else line.lstrip() for line in lines]
+        
+    return "\n".join(lines).strip()
+
 def extract_code_and_thought(response_text: str) -> Tuple[Optional[str], str]:
     """
     Extracts code and thought from response.
@@ -312,28 +336,7 @@ def extract_code_and_thought(response_text: str) -> Tuple[Optional[str], str]:
     """
     logger.debug("✂️ Extracting code and thought from response...")
     
-    # 1. 尝试解析 autoglm-phone-9b 风格 (PLHD tokens)
-    think_match = re.search(r"<\[PLHD20_never_used_51bce0c785ca2f68081bfa7d91973934\]>(.*?)<\[PLHD21_never_used_51bce0c785ca2f68081bfa7d91973934\]>", response_text, re.DOTALL)
-    answer_match = re.search(r"<\[PLHD41_never_used_51bce0c785ca2f68081bfa7d91973934\]>(.*?)<\[PLHD21_never_used_51bce0c785ca2f68081bfa7d91973934\]>", response_text, re.DOTALL)
-    
-    if think_match or answer_match:
-        thoughts = think_match.group(1).strip() if think_match else ""
-        answer = answer_match.group(1).strip() if answer_match else ""
-        
-        # 如果 answer 包含 do(...) 格式，尝试将其转换为 python 代码
-        if answer.startswith("do(") or answer.startswith("finish("):
-            python_code = _convert_autoglm_action_to_python(answer)
-            return python_code, thoughts
-        
-        # 如果 answer 已经是 python 代码块
-        code_pattern = r"```python\s*\n(.*?)\n```"
-        code_match = re.search(code_pattern, answer, re.DOTALL)
-        if code_match:
-            return code_match.group(1).strip(), thoughts
-            
-        return answer, thoughts
-
-    # 2. 尝试解析 <think> 和 <answer> (通用 AutoGLM 风格)
+    # 1. 尝试解析 <think> 和 <answer> (AutoGLM 风格)
     think_match = re.search(r"<think>(.*?)</think>", response_text, re.DOTALL)
     answer_match = re.search(r"<answer>(.*?)</answer>", response_text, re.DOTALL)
     
@@ -341,104 +344,42 @@ def extract_code_and_thought(response_text: str) -> Tuple[Optional[str], str]:
         thoughts = think_match.group(1).strip() if think_match else ""
         answer = answer_match.group(1).strip() if answer_match else ""
         
-        # 如果 answer 包含 do(...) 格式，尝试将其转换为 python 代码
+        # 直接使用 answer 作为代码，因为服务端已经适配了 AutoGLM 动作空间
         if answer.startswith("do(") or answer.startswith("finish("):
-            # 简单的转换逻辑：do(action="Tap", element=[x,y]) -> tap(x, y)
-            # 这里可以根据需要扩展更复杂的转换
-            python_code = _convert_autoglm_action_to_python(answer)
-            return python_code, thoughts
+            return clean_code(answer), thoughts
         
-        # 如果 answer 已经是 python 代码块
+        # 如果 answer 包含 Python 代码块
         code_pattern = r"```python\s*\n(.*?)\n```"
         code_match = re.search(code_pattern, answer, re.DOTALL)
         if code_match:
-            return code_match.group(1).strip(), thoughts
+            return clean_code(code_match.group(1)), thoughts
             
-        return answer, thoughts
+        return clean_code(answer), thoughts
 
     # 2. 原有的 Markdown 解析逻辑
-    code_pattern = r"^\s*```python\s*\n(.*?)\n^\s*```\s*?$"
-    code_matches = list(re.finditer(code_pattern, response_text, re.DOTALL | re.MULTILINE))
+    code_pattern = r"```python\s*\n(.*?)\n```"
+    code_matches = list(re.finditer(code_pattern, response_text, re.DOTALL))
 
     if not code_matches:
+        # 尝试匹配 do(...) 或 finish(...) 的兜底逻辑（参考 Open-AutoGLM client.py）
+        if "finish(message=" in response_text:
+            parts = response_text.split("finish(message=", 1)
+            action = "finish(message=" + parts[1]
+            thought = parts[0].strip()
+            return clean_code(action), thought
+        
+        if "do(action=" in response_text:
+            parts = response_text.split("do(action=", 1)
+            action = "do(action=" + parts[1]
+            thought = parts[0].strip()
+            return clean_code(action), thought
+
         logger.debug("  - No code block found. Entire response is thought.")
         return None, response_text.strip()
 
-    code = "\n".join(match.group(1).strip() for match in code_matches)
+    code = "\n".join(clean_code(match.group(1)) for match in code_matches)
     
     # Remove the code blocks from the original text to get the thought
-    thought = re.sub(code_pattern, "", response_text, flags=re.DOTALL | re.MULTILINE).strip()
+    thought = re.sub(code_pattern, "", response_text, flags=re.DOTALL).strip()
     
     return code, thought
-
-def _convert_autoglm_action_to_python(action_str: str) -> str:
-    """将 AutoGLM 的 do(action=...) 格式转换为 Python 代码"""
-    # 示例: do(action="Tap", element=[500,500]) -> tap(element=[500,500])
-    # 示例: finish(message="done") -> complete(success=True, reason="done")
-    
-    if action_str.startswith("finish("):
-        msg_match = re.search(r'message=["\'](.*?)["\']', action_str)
-        msg = msg_match.group(1) if msg_match else "Task completed"
-        return f'complete(success=True, reason="{msg}")'
-        
-    if action_str.startswith("do("):
-        action_match = re.search(r'action=["\'](.*?)["\']', action_str)
-        if not action_match:
-            return action_str
-            
-        action = action_match.group(1).lower()
-        
-        if action == "tap":
-            coord_match = re.search(r'element=\[(.*?)\]', action_str)
-            msg_match = re.search(r'message=["\'](.*?)["\']', action_str)
-            if coord_match:
-                result = f"tap(element=[{coord_match.group(1)}])"
-                if msg_match:
-                    logger.info(f"AutoGLM important action message: {msg_match.group(1)}")
-                return result
-        elif action == "type" or action == "type_name":
-            text_match = re.search(r'text=["\'](.*?)["\']', action_str)
-            if text_match:
-                return f'input_text("{text_match.group(1)}")'
-        elif action == "swipe":
-            start_match = re.search(r'start=\[(.*?)\]', action_str)
-            end_match = re.search(r'end=\[(.*?)\]', action_str)
-            if start_match and end_match:
-                return f"swipe(start=[{start_match.group(1)}], end=[{end_match.group(1)}])"
-        elif action == "back":
-            return "back()"
-        elif action == "home":
-            return "home()"
-        elif action == "launch":
-            app_match = re.search(r'app=["\'](.*?)["\']', action_str)
-            if app_match:
-                return f'start_app("{app_match.group(1)}")'
-        elif action == "wait":
-            duration_match = re.search(r'duration=["\'](\d+).*?["\']', action_str)
-            if duration_match:
-                return f'wait("{duration_match.group(1)} seconds")'
-            return 'wait("2 seconds")'
-        elif action == "double tap":
-            coord_match = re.search(r'element=\[(.*?)\]', action_str)
-            if coord_match:
-                return f"double_tap(element=[{coord_match.group(1)}])"
-        elif action == "long press":
-            coord_match = re.search(r'element=\[(.*?)\]', action_str)
-            if coord_match:
-                return f"long_press(element=[{coord_match.group(1)}])"
-        elif action == "take_over":
-            msg_match = re.search(r'message=["\'](.*?)["\']', action_str)
-            msg = msg_match.group(1) if msg_match else "Need user assistance"
-            return f'take_over(message="{msg}")'
-        elif action == "interact":
-            return 'interact()'
-        elif action == "note":
-            msg_match = re.search(r'message=["\'](.*?)["\']', action_str)
-            msg = msg_match.group(1) if msg_match else ""
-            return f'note(message="{msg}")'
-        elif action == "call_api":
-            inst_match = re.search(r'instruction=["\'](.*?)["\']', action_str)
-            inst = inst_match.group(1) if inst_match else ""
-            return f'call_api(instruction="{inst}")'
-                
-    return action_str

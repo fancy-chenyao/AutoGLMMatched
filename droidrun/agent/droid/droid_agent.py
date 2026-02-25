@@ -133,6 +133,7 @@ class DroidAgent(Workflow):
         memory_similarity_threshold: Optional[float] = None,
         memory_storage_dir: Optional[str] = None,
         memory_config: Optional[MemoryConfig] = None,
+        memory_llm: Optional[LLM] = None,  # 专门用于记忆系统的 LLM
         # 新增失败反思参数
         enable_failure_reflection: Optional[bool] = None,
         # 新增统一配置管理器参数
@@ -203,10 +204,10 @@ class DroidAgent(Workflow):
             
             self.memory_manager = ExperienceMemory(
                 storage_dir=self.memory_config.storage_dir,
-                llm=llm
+                llm=memory_llm or llm
             )
-            self.execution_monitor = ExecutionMonitor(llm=llm)
-            self.llm_services = LLMServices(llm)
+            self.execution_monitor = ExecutionMonitor(llm=memory_llm or llm)
+            self.llm_services = LLMServices(memory_llm or llm)
             self.pending_hot_actions: List[Dict] = []
             self.pending_hot_context: Dict = {}
             
@@ -245,6 +246,11 @@ class DroidAgent(Workflow):
         self.current_episodic_memory = None
 
         LoggingUtils.log_info("DroidAgent", "Initializing DroidAgent...")
+        model_name = getattr(llm, 'model', 'unknown')
+        LoggingUtils.log_info("DroidAgent", f"🤖 Base LLM: {model_name}")
+        if memory_llm:
+            memory_model_name = getattr(memory_llm, 'model', 'unknown')
+            LoggingUtils.log_info("DroidAgent", f"🧠 Memory LLM: {memory_model_name}")
         LoggingUtils.log_info("DroidAgent", "Trajectory saving level: {level}", level=self.save_trajectories)
 
         self.tool_list = describe_tools(tools, excluded_tools)
@@ -331,7 +337,7 @@ class DroidAgent(Workflow):
         """
         task: Task = ev.task
         reflection = ev.reflection if ev.reflection is not None else None
-        persona = self.cim.get_persona(task.agent_type)
+        persona = self.cim.get_persona(task.agent_type) or DEFAULT
 
         LoggingUtils.log_progress("DroidAgent", "Executing task: {description}", description=task.description)
 
@@ -501,7 +507,7 @@ class DroidAgent(Workflow):
                 })
                 
                 if monitor_result.fallback_needed:
-                    LoggingUtils.log_warning("DroidAgent", "Execution anomaly detected: {message}", message=monitor_result.message)
+                    LoggingUtils.log_warning("DroidAgent", "Execution anomaly detected: {detail}", detail=monitor_result.message)
                     # 触发回退逻辑
                     return self._handle_fallback(monitor_result, task)
 

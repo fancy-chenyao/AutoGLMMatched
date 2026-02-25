@@ -76,9 +76,16 @@ class ToolsConfig:
 @dataclass
 class APIConfig:
     """API配置"""
+    # 基础模型配置 (用于冷启动执行)
     api_key: Optional[str] = None
     model: str = "qwen-plus"
     api_base: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    
+    # 记忆系统专用模型配置 (用于判断任务类型和相似度)
+    memory_api_key: Optional[str] = None
+    memory_model: Optional[str] = None
+    memory_api_base: Optional[str] = None
+    
     timeout: int = 30
     max_retries: int = 3
 

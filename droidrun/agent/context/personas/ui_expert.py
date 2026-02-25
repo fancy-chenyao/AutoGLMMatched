@@ -17,7 +17,7 @@ UI_EXPERT = AgentPersona(
         Tools.drag.__name__,
         Tools.remember.__name__,
         Tools.complete.__name__,
-        Tools.ask_user.__name__,  # Phase 3: Interactive Execution
+        # Tools.ask_user.__name__,  # Phase 3: Interactive Execution
     ],
     required_context=[
         "ui_state",
@@ -95,6 +95,10 @@ UI_EXPERT = AgentPersona(
     **Important Notes:**
     - If there is a precondition for the task, you MUST check if it is met.
     - If a goal's precondition is unmet, fail the task by calling `complete(success=False, reason='...')` with an explanation.
+    - CRITICAL: If some user parameters are missing on the current screen, do NOT complete the task yet. The workflow might be multi-step. You should:
+      1. Look for navigation buttons (e.g., "Next", "Confirm", "Continue").
+      2. Click them to proceed to the next page where missing parameters might exist.
+      3. Only call `complete(success=True)` when the goal is fully achieved (e.g., final success message) or you have exhaustively explored all pages.
 
     ## Final Answer Guidelines:
     - When providing a final answer, focus on directly answering the user's question
@@ -108,5 +112,3 @@ UI_EXPERT = AgentPersona(
     You MUST ALWAYS to include your reasoning and thought process outside of the code block. You MUST DOUBLE CHECK that TASK IS COMPLETE with a SCREENSHOT.
     """
 )
-
-

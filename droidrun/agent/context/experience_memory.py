@@ -368,9 +368,10 @@ class ExperienceMemory:
             # 记录LLM思考开始时间
             llm_start_time = time.time()
             start_timestamp = time.strftime("%H:%M:%S", time.localtime())
+            model_name = getattr(self.llm, 'model', 'unknown') if self.llm else 'none'
             LoggingUtils.log_info(
                 "ExperienceMemory",
-                f"🤔 LLM 开始相似度计算与排序 at {start_timestamp}"
+                f"🤔 LLM ({model_name}) 开始相似度计算与排序 at {start_timestamp}"
             )
 
             # 构建合并的提示词：同时计算相似度和排序
@@ -664,9 +665,10 @@ class ExperienceMemory:
         # 记录 LLM 思考开始时间
         llm_start_time = time.time()
         start_timestamp = time.strftime("%H:%M:%S", time.localtime())
+        model_name = getattr(self.llm, 'model', 'unknown') if self.llm else 'none'
         LoggingUtils.log_info(
             "ExperienceMemory",
-            f"🤔 LLM 开始思考判断任务类型 at {start_timestamp} "
+            f"🤔 LLM ({model_name}) 开始思考判断任务类型 at {start_timestamp} "
         )
 
         try:

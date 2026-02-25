@@ -171,6 +171,8 @@ async def run_command(
 
             # LLM setup
             log_handler.update_step("Initializing LLM...")
+            
+            # 初始化基础模型 (BASE_MODEL)
             llm = load_llm(
                 provider_name=provider,
                 model=model,
@@ -178,6 +180,19 @@ async def run_command(
                 api_base=api_base,
                 **kwargs,
             )
+            
+            # 初始化记忆系统专用模型 (ALIYUN_MODEL)
+            memory_llm = None
+            api_config = config_manager.get_api_config()
+            if api_config.memory_model:
+                logger.info(f"🧠 Initializing specialized memory LLM: {api_config.memory_model}")
+                memory_llm = load_llm(
+                    provider_name="openai",  # 默认使用 openai-like 接口
+                    model=api_config.memory_model,
+                    api_base=api_config.memory_api_base or api_config.api_base,
+                    api_key=api_config.memory_api_key or api_config.api_key,
+                )
+            
             logger.info(f"🧠 LLM ready: {provider}/{model}")
 
             # Agent setup
@@ -203,6 +218,7 @@ async def run_command(
             droid_agent = DroidAgent(
                 goal=command,
                 llm=llm,
+                memory_llm=memory_llm,
                 tools=tools,
                 personas=personas,
                 excluded_tools=excluded_tools,

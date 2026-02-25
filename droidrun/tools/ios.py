@@ -58,12 +58,12 @@ class IOSTools(Tools):
         self.bundle_identifiers = bundle_identifiers
         logger.info(f"iOS device URL: {url}")
 
-    def get_state(self) -> List[Dict[str, Any]]:
+    async def get_state(self) -> Dict[str, Any]:
         """
         Get all clickable UI elements from the iOS device using accessibility API.
 
         Returns:
-            List of dictionaries containing UI elements extracted from the device screen
+            Dictionary containing UI elements extracted from the device screen
         """
         try:
             a11y_url = f"{self.url}/vision/a11y"
@@ -88,13 +88,151 @@ class IOSTools(Tools):
                 logger.error(
                     f"Failed to get accessibility data: HTTP {response.status_code}"
                 )
-                raise ValueError(
-                    f"Failed to get accessibility data: HTTP {response.status_code}"
-                )
+                return {"error": "HTTP Error", "message": f"HTTP {response.status_code}"}
 
         except Exception as e:
             logger.error(f"Error getting clickable elements: {e}")
-            # raise ValueError(f"Error getting clickable elements: {e}")
+            return {"error": "Exception", "message": str(e)}
+
+    async def tap_by_index(self, index: int) -> str:
+        """
+        Tap on a UI element by its index.
+        """
+        # ... existing implementation ...
+        return await self.tap(index=index)
+
+    async def tap(self, element: Optional[List[int]] = None, index: Optional[int] = None) -> str:
+        """
+        Tap at coordinates or by element index.
+        """
+        if index is not None:
+            # Re-use existing tap_by_index logic (simplified for now)
+            try:
+                # Find element in cache
+                matching_elements = [e for e in self.clickable_elements_cache if e.get("index") == index]
+                if not matching_elements:
+                    return f"Error: No element found with index {index}"
+                
+                element_data = matching_elements[0]
+                x = element_data.get("x", 0)
+                y = element_data.get("y", 0)
+                width = element_data.get("width", 0)
+                height = element_data.get("height", 0)
+                ios_rect = "{{%s,%s},{%s,%s}}" % (x, y, width, height)
+                
+                tap_url = f"{self.url}/gestures/tap"
+                payload = {"rect": ios_rect, "count": 1, "longPress": False}
+                response = requests.post(tap_url, json=payload)
+                return f"Tapped element {index}" if response.status_code == 200 else f"Error: {response.status_code}"
+            except Exception as e:
+                return f"Error: {str(e)}"
+        elif element is not None:
+            # Tap by coordinates
+            try:
+                x, y = element
+                ios_rect = "{{%s,%s},{1,1}}" % (x, y)
+                tap_url = f"{self.url}/gestures/tap"
+                payload = {"rect": ios_rect, "count": 1, "longPress": False}
+                response = requests.post(tap_url, json=payload)
+                return f"Tapped at {element}" if response.status_code == 200 else f"Error: {response.status_code}"
+            except Exception as e:
+                return f"Error: {str(e)}"
+        return "Error: No index or element provided"
+
+    async def swipe(
+        self, start: List[int], end: List[int], duration_ms: int = 300
+    ) -> bool:
+        """
+        Performs a swipe gesture.
+        """
+        try:
+            start_x, start_y = start
+            end_x, end_y = end
+            # ... rest of existing swipe logic ...
+            dx = end_x - start_x
+            dy = end_y - start_y
+            direction = "down"
+            if abs(dx) > abs(dy):
+                direction = "right" if dx > 0 else "left"
+            else:
+                direction = "down" if dy > 0 else "up"
+            
+            swipe_url = f"{self.url}/gestures/swipe"
+            payload = {"direction": direction}
+            response = requests.post(swipe_url, json=payload)
+            return response.status_code == 200
+        except Exception:
+            return False
+
+    async def drag(
+        self, start: List[int], end: List[int], duration_ms: int = 3000
+    ) -> bool:
+        """Drag gesture (fallback to swipe for iOS)"""
+        return await self.swipe(start, end, duration_ms)
+
+    async def input_text(self, text: str, element: Optional[List[int]] = None, index: Optional[int] = None) -> str:
+        """Input text"""
+        try:
+            input_url = f"{self.url}/gestures/text"
+            payload = {"text": text}
+            response = requests.post(input_url, json=payload)
+            return "Text input sent" if response.status_code == 200 else f"Error: {response.status_code}"
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    async def back(self) -> str:
+        """Back button (Home on iOS)"""
+        try:
+            home_url = f"{self.url}/gestures/home"
+            response = requests.post(home_url)
+            return "Home/Back action sent" if response.status_code == 200 else f"Error: {response.status_code}"
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    async def press_key(self, keycode: int) -> str:
+        """Press key (Not supported on iOS)"""
+        return "Error: Key press not supported on iOS"
+
+    async def start_app(self, package: str, activity: str = "") -> str:
+        """Start app"""
+        try:
+            launch_url = f"{self.url}/apps/launch"
+            payload = {"bundleIdentifier": package}
+            response = requests.post(launch_url, json=payload)
+            return f"Launched {package}" if response.status_code == 200 else f"Error: {response.status_code}"
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    async def take_screenshot(self) -> Tuple[str, bytes]:
+        """Take screenshot"""
+        try:
+            screenshot_url = f"{self.url}/vision/screenshot"
+            response = requests.get(screenshot_url)
+            if response.status_code == 200:
+                return ("PNG", response.content)
+            raise ValueError(f"Failed to take screenshot: {response.status_code}")
+        except Exception as e:
+            raise ValueError(f"Error taking screenshot: {str(e)}")
+
+    async def list_packages(self, include_system_apps: bool = False) -> List[str]:
+        """List packages"""
+        return self.bundle_identifiers
+
+    async def remember(self, information: str) -> str:
+        """Remember information"""
+        self.memory.append(information)
+        return f"Remembered: {information}"
+
+    async def get_memory(self) -> List[str]:
+        """Get memory"""
+        return self.memory
+
+    async def complete(self, success: bool, reason: str = "") -> None:
+        """Complete task"""
+        self.success = success
+        self.reason = reason
+        self.finished = True
+
 
     def _parse_ios_accessibility_tree(self, a11y_data: str) -> List[Dict[str, Any]]:
         """
