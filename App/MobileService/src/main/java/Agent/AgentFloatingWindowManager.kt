@@ -26,6 +26,12 @@ class AgentFloatingWindowManager(private val context: Context) {
      * 显示悬浮窗
      */
     fun showFloatingWindow() {
+        // 检查是否是Activity上下文，因为应用内悬浮窗需要Activity上下文
+        if (context !is android.app.Activity) {
+            AgentErrorHandler.handleFloatingWindowError(context, "应用内悬浮窗需要Activity上下文", null)
+            return
+        }
+        
         if (isShowing) {
             Toast.makeText(context, "悬浮窗已显示", Toast.LENGTH_SHORT).show()
             return
@@ -34,8 +40,6 @@ class AgentFloatingWindowManager(private val context: Context) {
         try {
             // 获取WindowManager
             windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            
-            // 仅应用内悬浮窗：不再请求系统悬浮窗权限
 
             // 创建悬浮窗视图
             createFloatingView()
