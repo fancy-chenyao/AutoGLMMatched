@@ -82,12 +82,24 @@ class TaskExecutor:
             try:
                 from llama_index.llms.openai_like import OpenAILike
                 
+                # 初始化基础模型 (BASE_MODEL)
                 llm = OpenAILike(
                     model=api_config.model,
                     api_base=api_config.api_base,
                     api_key=api_config.api_key,
-                    is_chat_model=True,  # droidrun需要聊天模型支持
+                    is_chat_model=True,
                 )
+                
+                # 初始化记忆系统专用模型 (ALIYUN_MODEL)
+                memory_llm = None
+                if api_config.memory_model:
+                    LoggingUtils.log_info("TaskExecutor", "Initializing specialized memory LLM: {model}", model=api_config.memory_model)
+                    memory_llm = OpenAILike(
+                        model=api_config.memory_model,
+                        api_base=api_config.memory_api_base or api_config.api_base,
+                        api_key=api_config.memory_api_key or api_config.api_key,
+                        is_chat_model=True,
+                    )
             except Exception as e:
                 LoggingUtils.log_error("TaskExecutor", "Failed to load LLM: {error}", error=e)
                 import traceback
@@ -116,6 +128,7 @@ class TaskExecutor:
                 agent = DroidAgent(
                     goal=goal,
                     llm=llm,
+                    memory_llm=memory_llm,
                     tools=tools,
                     personas=selected_personas,
                     config_manager=self.config_manager,

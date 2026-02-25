@@ -70,13 +70,24 @@ async def main():
     print(f"📊 最大步数: {config_manager.get('agent.max_steps', 20)}")
     print(f"🐛 调试模式: {'开启' if system_config.debug else '关闭'}")
     
-    # set up 阿里百炼 llm
+    # set up 基础模型 llm (BASE_MODEL)
     llm = OpenAILike(
         model=api_config.model,
         api_base=api_config.api_base,
         api_key=api_config.api_key,
-        is_chat_model=True,  # droidrun需要聊天模型支持
+        is_chat_model=True,
     )
+    
+    # set up 记忆系统 llm (ALIYUN_MODEL)
+    memory_llm = None
+    if api_config.memory_model:
+        print(f"🤖 初始化专用记忆模型: {api_config.memory_model}")
+        memory_llm = OpenAILike(
+            model=api_config.memory_model,
+            api_base=api_config.memory_api_base or api_config.api_base,
+            api_key=api_config.memory_api_key or api_config.api_key,
+            is_chat_model=True,
+        )
     
     llm_init_time = time.time()
     print(f"🤖 LLM 初始化完成 (耗时: {llm_init_time - tools_init_time:.2f}秒)")
@@ -89,6 +100,7 @@ async def main():
         # goal="请帮我提交一个出差申请，出差人为张博涛，出差日期为2025年11月10日，出差性质为客户拜访，费用责任中心为建行集团金融科技创新中心，非业务专项，预算项目为交通费，预算事项为日常运营，出差事由为拜访客户。",
         # goal="请帮我提交一个出差申请，出差人为张博涛，出差事由为拜访客户。",
         llm=llm,
+        memory_llm=memory_llm,
         tools=tools,
         config_manager=config_manager,  # 使用统一配置管理器
     )

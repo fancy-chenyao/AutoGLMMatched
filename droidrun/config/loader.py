@@ -14,12 +14,12 @@ class ConfigLoader:
     
     def __init__(self):
         self.env_mapping = {
-            # API配置
-            'ALIYUN_API_KEY': 'api.api_key',
-            'ALIYUN_MODEL': 'api.model',
-            'ALIYUN_API_BASE': 'api.api_base',
+            # 记忆系统专用模型配置 (ALIYUN_MODEL)
+            'ALIYUN_API_KEY': 'api.memory_api_key',
+            'ALIYUN_MODEL': 'api.memory_model',
+            'ALIYUN_API_BASE': 'api.memory_api_base',
             
-            # Base Model 配置 (支持 autoglm-phone-9b 等本地模型)
+            # 基础模型配置 (BASE_MODEL)
             'BASE_API_KEY': 'api.api_key',
             'BASE_MODEL': 'api.model',
             'BASE_API_BASE': 'api.api_base',

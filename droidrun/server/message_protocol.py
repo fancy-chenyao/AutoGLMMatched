@@ -91,11 +91,12 @@ class MessageProtocol:
         return message
     
     @staticmethod
-    def create_server_ready(status: str = "success") -> Dict[str, Any]:
+    def create_server_ready(status: str = "success", device_id: Optional[str] = None) -> Dict[str, Any]:
         """创建 server_ready 消息"""
         return MessageProtocol.create_message(
             MessageType.SERVER_READY,
-            status=status
+            status=status,
+            device_id=device_id
         )
     
     @staticmethod
@@ -103,6 +104,7 @@ class MessageProtocol:
         command: str,
         params: Dict[str, Any],
         request_id: str,
+        device_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """创建命令消息"""
         return MessageProtocol.create_message(
@@ -111,7 +113,8 @@ class MessageProtocol:
                 "command": command,
                 "params": params
             },
-            request_id=request_id
+            request_id=request_id,
+            device_id=device_id
         )
     
     @staticmethod
@@ -141,11 +144,12 @@ class MessageProtocol:
         )
     
     @staticmethod
-    def create_heartbeat_ack() -> Dict[str, Any]:
+    def create_heartbeat_ack(device_id: Optional[str] = None) -> Dict[str, Any]:
         """创建心跳确认消息"""
         return MessageProtocol.create_message(
             MessageType.HEARTBEAT_ACK,
-            status="success"
+            status="success",
+            device_id=device_id
         )
     
     @staticmethod
@@ -226,6 +230,7 @@ class MessageProtocol:
         status: str = "success",
         result: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
+        device_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """创建任务响应消息"""
         kwargs = {}
@@ -238,6 +243,7 @@ class MessageProtocol:
             MessageType.TASK_RESPONSE,
             request_id=request_id,
             status=status,
+            device_id=device_id,
             **kwargs
         )
     
@@ -247,6 +253,7 @@ class MessageProtocol:
         status: str,
         progress: Optional[float] = None,
         message: Optional[str] = None,
+        device_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """创建任务状态更新消息"""
         data = {"status": status}
@@ -258,7 +265,8 @@ class MessageProtocol:
         return MessageProtocol.create_message(
             MessageType.TASK_STATUS,
             data=data,
-            request_id=request_id
+            request_id=request_id,
+            device_id=device_id
         )
 
     @staticmethod
@@ -268,7 +276,8 @@ class MessageProtocol:
         question_type: str = "text",
         options: Optional[List[Any]] = None,
         default_value: Optional[Any] = None,
-        timeout_seconds: Optional[float] = None
+        timeout_seconds: Optional[float] = None,
+        device_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         创建用户问题消息
@@ -280,6 +289,7 @@ class MessageProtocol:
             options: 选项列表
             default_value: 默认值
             timeout_seconds: 超时时间
+            device_id: 设备ID
         """
         data = {
             "question_id": question_id,
@@ -295,7 +305,8 @@ class MessageProtocol:
         
         return MessageProtocol.create_message(
             MessageType.USER_QUESTION,
-            data=data
+            data=data,
+            device_id=device_id
         )
     
     @staticmethod
