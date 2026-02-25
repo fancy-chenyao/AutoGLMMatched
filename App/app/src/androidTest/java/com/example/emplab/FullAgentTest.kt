@@ -135,6 +135,10 @@ class FullAgentTest {
         recorder = PerformanceRecorder()
         scenario = activityRule.scenario
         
+        // 清理命令处理器缓存与索引管理器，确保单测运行无跨测试残留状态
+        CommandHandler.clearCache()
+        Agent.IncrementalIndexManager.reset()
+        
         // ActivityTracker 已经在 MainApplication 中注册，这里不需要重复注册
         // 使用 instrumentation 的 idle 等待替代纯 sleep，提升稳定性
         debug.step("setUp.wait_idle_before_ui")
@@ -169,12 +173,17 @@ class FullAgentTest {
         Log.d(TAG, "Starting testTapAction")
 
         // 动作前获取稳定状态，用于独立证据比对
-        val preState = getStableState(1500, 300)
+        val preState = getStableState(5000, 1200)
 
         // 1. 准备参数
         val params = JSONObject().apply {
-            put("x", 100) // 假设按钮在 (0,0) 附近，具体位置需要动态获取
+            put("x", 100) // 占位，后续会用真实坐标替换
             put("y", 100)
+            // 显式配置页面变化验证参数，提升稳定性
+            put("verify_page_change", true)
+            put("verify_timeout_ms", 5000)
+            put("verify_stable_window_ms", 1200)
+            put("verify_interval_ms", 60)
         }
         
         // 动态获取按钮位置
@@ -191,6 +200,8 @@ class FullAgentTest {
         params.put("x", btnXDp)
         params.put("y", btnYDp)
 
+        // 每次单测执行前确保页面处于初始态
+        resetActivityToInitialState()
         // 2. 执行并计时
         executeCommand("tap", params, actionName) { response ->
             // 3. 验证结果
@@ -741,6 +752,14 @@ class FullAgentTest {
     /**
      * 重复执行指定动作N次，并可选进行独立状态对比验证与记录
      * 同时可对比启用/禁用页面变化验证的耗时差异（VER/NOV 分组）
+     * @param cmd 命令
+     * @param buildParams 构建参数函数
+     * @param actionName 动作名称
+     * @param runs 次数
+     * @param independentVerify 是否进行独立状态对比验证
+     * @param compareVerifyCost 是否比较启用/禁用验证耗时
+     * @param preRunInit 每轮开始时的场景初始化（如重置按钮文本），为空则不初始化
+     * @param perRunAssert 每轮响应断言
      */
     private fun repeatAction(
         cmd: String,
@@ -749,9 +768,12 @@ class FullAgentTest {
         runs: Int = RUNS_PER_ACTION,
         independentVerify: Boolean = false,
         compareVerifyCost: Boolean = true,
+        preRunInit: (() -> Unit)? = null,
         perRunAssert: (JSONObject, Int) -> Unit
     ) {
         for (i in 1..runs) {
+            // 每轮开始执行场景初始化（如重置控件文本至初始值）
+            preRunInit?.invoke()
             // 验证开启模式（用于断言与独立状态对比）
             run {
                 val actionNameVer = "${actionName}_VER"
@@ -781,8 +803,10 @@ class FullAgentTest {
                     perRunAssert(resp, i)
                 }
             }
-            // 验证关闭模式（仅统计耗时用于对比，不进行断言）
+            // 验证关闭模式（仅统计耗时用于对比，无PageChangeVerifier）
             if (compareVerifyCost) {
+                // NOV 分支也重置场景，保证与 VER 分支在同一初始态下对比耗时
+                preRunInit?.invoke()
                 val actionNameNov = "${actionName}_NOV"
                 val paramsNov = buildParams().apply { put("verify_page_change", false) }
                 executeCommand(cmd, paramsNov, actionNameNov) { _ -> 
@@ -906,17 +930,18 @@ class FullAgentTest {
      */
     @Test
     fun testTapActionRepeatedPositive() {
-        val center = getViewCenterDp(BTN_ID)
         repeatAction(
             cmd = "tap",
             buildParams = {
+                val center = getViewCenterDp(BTN_ID)
                 JSONObject().apply {
                     put("x", center.first)
                     put("y", center.second)
                 }
             },
             actionName = "TAP_POS",
-            independentVerify = true
+            independentVerify = true,
+            preRunInit = { resetActivityToInitialState() }
         ) { resp, _ ->
             val status = resp.optString("status")
             val change = resp.optString("page_change_type", "")
@@ -925,21 +950,27 @@ class FullAgentTest {
     }
 
     /**
-     * TAP 反例：点击中性按钮（不改变文本），PageChangeVerifier 应给出未变化
+     * TAP 反例：使用中性按钮作为点击目标，页面应在稳定窗口结束后保持未变化
+     * 为降低交互动画带来的误判，提升稳定窗口与轮询精度
      */
     @Test
     fun testTapActionRepeatedNegative() {
-        val center = getViewCenterDp(NEUTRAL_ID)
         repeatAction(
             cmd = "tap",
             buildParams = {
+                val center = getViewCenterDp(NEUTRAL_ID)
                 JSONObject().apply {
                     put("x", center.first)
                     put("y", center.second)
+                    // 提升稳定窗口，进一步降低短暂视觉扰动带来的误判
+                    put("verify_stable_window_ms", 1500)
+                    put("verify_interval_ms", 50)
+                    put("verify_timeout_ms", 6000)
                 }
             },
             actionName = "TAP_NEG",
-            independentVerify = true
+            independentVerify = true,
+            preRunInit = { resetActivityToInitialState() }
         ) { resp, _ ->
             val status = resp.optString("status")
             val err = resp.optString("error", "")
@@ -952,10 +983,10 @@ class FullAgentTest {
      */
     @Test
     fun testInputTextActionRepeatedPositive() {
-        val center = getViewCenterDp(EDIT_ID)
         repeatAction(
             cmd = "input_text",
             buildParams = {
+                val center = getViewCenterDp(EDIT_ID)
                 val text = "Hello Agent ${System.currentTimeMillis() % 1000}"
                 JSONObject().apply {
                     put("text", text)
@@ -965,7 +996,8 @@ class FullAgentTest {
                 }
             },
             actionName = "INPUT_POS",
-            independentVerify = true
+            independentVerify = true,
+            preRunInit = { resetActivityToInitialState() }
         ) { resp, _ ->
             assertEquals("success", resp.optString("status"))
         }
@@ -976,7 +1008,6 @@ class FullAgentTest {
      */
     @Test
     fun testInputTextActionRepeatedNegative() {
-        val center = getViewCenterDp(EDIT_ID)
         // 先确保文本为 Seed
         scenario.onActivity {
             val edit = it.findViewById<EditText>(EDIT_ID)
@@ -985,6 +1016,7 @@ class FullAgentTest {
         repeatAction(
             cmd = "input_text",
             buildParams = {
+                val center = getViewCenterDp(EDIT_ID)
                 JSONObject().apply {
                     put("text", "Seed")
                     put("element", org.json.JSONArray().apply {
@@ -993,7 +1025,8 @@ class FullAgentTest {
                 }
             },
             actionName = "INPUT_NEG",
-            independentVerify = true
+            independentVerify = true,
+            preRunInit = { resetActivityToInitialState() }
         ) { resp, _ ->
             val status = resp.optString("status")
             val err = resp.optString("error", "")
@@ -1006,21 +1039,21 @@ class FullAgentTest {
      */
     @Test
     fun testSwipeActionRepeatedPositive() {
-        var startXDp = 0; var startYDp = 0; var endXDp = 0; var endYDp = 0
-        scenario.onActivity {
-            val scroll = it.findViewById<View>(SCROLL_ID)
-            val loc = IntArray(2); scroll.getLocationOnScreen(loc)
-            val d = it.resources.displayMetrics.density
-            val sx = loc[0] + scroll.width / 2
-            val sy = loc[1] + scroll.height - 50
-            val ex = sx
-            val ey = loc[1] + 50
-            startXDp = (sx / d).toInt(); startYDp = (sy / d).toInt()
-            endXDp = (ex / d).toInt(); endYDp = (ey / d).toInt()
-        }
         repeatAction(
             cmd = "swipe",
             buildParams = {
+                var startXDp = 0; var startYDp = 0; var endXDp = 0; var endYDp = 0
+                scenario.onActivity {
+                    val scroll = it.findViewById<View>(SCROLL_ID)
+                    val loc = IntArray(2); scroll.getLocationOnScreen(loc)
+                    val d = it.resources.displayMetrics.density
+                    val sx = loc[0] + scroll.width / 2
+                    val sy = loc[1] + scroll.height - 50
+                    val ex = sx
+                    val ey = loc[1] + 50
+                    startXDp = (sx / d).toInt(); startYDp = (sy / d).toInt()
+                    endXDp = (ex / d).toInt(); endYDp = (ey / d).toInt()
+                }
                 JSONObject().apply {
                     put("start_x", startXDp); put("start_y", startYDp)
                     put("end_x", endXDp); put("end_y", endYDp)
@@ -1028,7 +1061,8 @@ class FullAgentTest {
                 }
             },
             actionName = "SWIPE_POS",
-            independentVerify = true
+            independentVerify = true,
+            preRunInit = { resetActivityToInitialState() }
         ) { resp, _ ->
             val status = resp.optString("status")
             assertEquals("success", status)
@@ -1040,18 +1074,18 @@ class FullAgentTest {
      */
     @Test
     fun testSwipeActionRepeatedNegative() {
-        var centerXDp = 0; var centerYDp = 0
-        scenario.onActivity {
-            val scroll = it.findViewById<View>(SCROLL_ID)
-            val loc = IntArray(2); scroll.getLocationOnScreen(loc)
-            val d = it.resources.displayMetrics.density
-            val cx = loc[0] + scroll.width / 2
-            val cy = loc[1] + scroll.height / 2
-            centerXDp = (cx / d).toInt(); centerYDp = (cy / d).toInt()
-        }
         repeatAction(
             cmd = "swipe",
             buildParams = {
+                var centerXDp = 0; var centerYDp = 0
+                scenario.onActivity {
+                    val scroll = it.findViewById<View>(SCROLL_ID)
+                    val loc = IntArray(2); scroll.getLocationOnScreen(loc)
+                    val d = it.resources.displayMetrics.density
+                    val cx = loc[0] + scroll.width / 2
+                    val cy = loc[1] + scroll.height / 2
+                    centerXDp = (cx / d).toInt(); centerYDp = (cy / d).toInt()
+                }
                 JSONObject().apply {
                     put("start_x", centerXDp); put("start_y", centerYDp)
                     put("end_x", centerXDp); put("end_y", centerYDp)
@@ -1059,7 +1093,8 @@ class FullAgentTest {
                 }
             },
             actionName = "SWIPE_NEG",
-            independentVerify = true
+            independentVerify = true,
+            preRunInit = { resetActivityToInitialState() }
         ) { resp, _ ->
             val status = resp.optString("status")
             val err = resp.optString("error", "")
@@ -1072,10 +1107,10 @@ class FullAgentTest {
      */
     @Test
     fun testDoubleTapActionRepeatedPositive() {
-        val center = getViewCenterDp(BTN_ID)
         repeatAction(
             cmd = "double tap",
             buildParams = {
+                val center = getViewCenterDp(BTN_ID)
                 JSONObject().apply {
                     put("element", org.json.JSONArray().apply {
                         put(center.first); put(center.second)
@@ -1083,7 +1118,8 @@ class FullAgentTest {
                 }
             },
             actionName = "DOUBLE_POS",
-            independentVerify = true
+            independentVerify = true,
+            preRunInit = { resetActivityToInitialState() }
         ) { resp, _ ->
             assertEquals("success", resp.optString("status"))
         }
@@ -1094,10 +1130,10 @@ class FullAgentTest {
      */
     @Test
     fun testDoubleTapActionRepeatedNegative() {
-        val center = getViewCenterDp(NEUTRAL_ID)
         repeatAction(
             cmd = "double tap",
             buildParams = {
+                val center = getViewCenterDp(NEUTRAL_ID)
                 JSONObject().apply {
                     put("element", org.json.JSONArray().apply {
                         put(center.first); put(center.second)
@@ -1105,7 +1141,8 @@ class FullAgentTest {
                 }
             },
             actionName = "DOUBLE_NEG",
-            independentVerify = true
+            independentVerify = true,
+            preRunInit = { resetActivityToInitialState() }
         ) { resp, _ ->
             val status = resp.optString("status")
             val err = resp.optString("error", "")
@@ -1118,10 +1155,10 @@ class FullAgentTest {
      */
     @Test
     fun testLongPressActionRepeatedPositive() {
-        val center = getViewCenterDp(BTN_ID)
         repeatAction(
             cmd = "long press",
             buildParams = {
+                val center = getViewCenterDp(BTN_ID)
                 JSONObject().apply {
                     put("element", org.json.JSONArray().apply {
                         put(center.first); put(center.second)
@@ -1129,7 +1166,8 @@ class FullAgentTest {
                 }
             },
             actionName = "LONG_POS",
-            independentVerify = true
+            independentVerify = true,
+            preRunInit = { resetActivityToInitialState() }
         ) { resp, _ ->
             val status = resp.optString("status")
             var longPressed = false
@@ -1146,10 +1184,10 @@ class FullAgentTest {
      */
     @Test
     fun testLongPressActionRepeatedNegative() {
-        val center = getViewCenterDp(NEUTRAL_ID)
         repeatAction(
             cmd = "long press",
             buildParams = {
+                val center = getViewCenterDp(NEUTRAL_ID)
                 JSONObject().apply {
                     put("element", org.json.JSONArray().apply {
                         put(center.first); put(center.second)
@@ -1157,7 +1195,8 @@ class FullAgentTest {
                 }
             },
             actionName = "LONG_NEG",
-            independentVerify = true
+            independentVerify = true,
+            preRunInit = { resetActivityToInitialState() }
         ) { resp, _ ->
             val status = resp.optString("status")
             val err = resp.optString("error", "")
@@ -1278,6 +1317,21 @@ class FullAgentTest {
                 Thread.sleep(200)
             } catch (_: InterruptedException) {}
         }
+    }
+    
+    /**
+     * 重置测试 Activity 到初始页面状态
+     * - 通过 ActivityScenario.recreate() 触发 onDestroy/onCreate
+     * - 等待 UI 空闲与稳定
+     * - 重新预热元素树以保证坐标查找与缓存一致
+     */
+    private fun resetActivityToInitialState() {
+        scenario.recreate()
+        waitForIdle()
+        // 重建后再次清理命令处理器缓存与索引映射，避免旧页面的残留数据影响本轮测试
+        CommandHandler.clearCache()
+        Agent.IncrementalIndexManager.reset()
+        primeElementTree()
     }
 
     // --- Performance Recorder ---
