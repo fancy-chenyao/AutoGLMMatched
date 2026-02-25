@@ -550,7 +550,7 @@ object CommandHandler {
                         return@clickByCoordinateDp
                     }
                     // 验证开关与参数
-                    val verifyPageChange = params.optBoolean("verify_page_change", true)
+                    val verifyPageChange = params.optBoolean("verify_page_change", false)
                     val verifyTimeoutMs = params.optLong("verify_timeout_ms", 3000L)
                     val verifyStableWindowMs = params.optLong("verify_stable_window_ms", 800L)
                     val verifyIntervalMs = params.optLong("verify_interval_ms", 100L)
@@ -562,7 +562,7 @@ object CommandHandler {
                     // 使用 PageChangeVerifier 验证页面变化（稳定窗口版）
                     PageChangeVerifier.verifyActionWithPageChange(
                         handler = Handler(Looper.getMainLooper()),
-                        getCurrentActivity = { ActivityTracker.getCurrentActivity() },
+                        getCurrentActivity = { activity },
                         preActivity = preActivity,
                         preViewTreeHash = preHash,
                         preWebViewAggHash = preWebHash,
@@ -718,7 +718,7 @@ object CommandHandler {
                 ) { success ->
                     if (success) {
                         // 验证开关与参数
-                        val verifyPageChange = params.optBoolean("verify_page_change", true)
+                        val verifyPageChange = params.optBoolean("verify_page_change", false)
                         val verifyTimeoutMs = params.optLong("verify_timeout_ms", 3000L)
                         val verifyStableWindowMs = params.optLong("verify_stable_window_ms", 800L)
                         val verifyIntervalMs = params.optLong("verify_interval_ms", 100L)
@@ -831,7 +831,7 @@ object CommandHandler {
                 ElementController.setInputValue(activity, targetElement.resourceId, text) { success ->
                     if (success) {
                         // 验证开关与参数
-                        val verifyPageChange = params.optBoolean("verify_page_change", true)
+                        val verifyPageChange = params.optBoolean("verify_page_change", false)
                         val verifyTimeoutMs = params.optLong("verify_timeout_ms", 3000L)
                         val verifyStableWindowMs = params.optLong("verify_stable_window_ms", 800L)
                         val verifyIntervalMs = params.optLong("verify_interval_ms", 100L)
@@ -971,7 +971,7 @@ object CommandHandler {
                                 return@clickByCoordinateDp
                             }
                             // 验证开关与参数
-                            val verifyPageChange = params.optBoolean("verify_page_change", true)
+                            val verifyPageChange = params.optBoolean("verify_page_change", false)
                             val verifyTimeoutMs = params.optLong("verify_timeout_ms", 3000L)
                             val verifyStableWindowMs = params.optLong("verify_stable_window_ms", 800L)
                             val verifyIntervalMs = params.optLong("verify_interval_ms", 100L)
@@ -1069,7 +1069,7 @@ object CommandHandler {
                         return@longClickByCoordinateDp
                     }
                     // 验证开关与参数
-                    val verifyPageChange = params.optBoolean("verify_page_change", true)
+                    val verifyPageChange = params.optBoolean("verify_page_change", false)
                     val verifyTimeoutMs = params.optLong("verify_timeout_ms", 3000L)
                     val verifyStableWindowMs = params.optLong("verify_stable_window_ms", 800L)
                     val verifyIntervalMs = params.optLong("verify_interval_ms", 100L)
@@ -1219,7 +1219,7 @@ object CommandHandler {
                 NativeController.goBack(activity) { success ->
                     if (success) {
                         // 验证开关与参数
-                        val verifyPageChange = params.optBoolean("verify_page_change", true)
+                        val verifyPageChange = params.optBoolean("verify_page_change", false)
                         val verifyTimeoutMs = params.optLong("verify_timeout_ms", 3000L)
                         val verifyStableWindowMs = params.optLong("verify_stable_window_ms", 800L)
                         val verifyIntervalMs = params.optLong("verify_interval_ms", 100L)
