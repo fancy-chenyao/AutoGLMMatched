@@ -2,9 +2,10 @@ package com.example.emplab
 
 import Agent.MobileGPTGlobal
 import Agent.MobileService
-import Agent.AgentFloatingWindowManager
 import android.content.Intent
+import android.content.Context
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -34,8 +35,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvNavMessage: TextView
     private lateinit var tvNavProfile: TextView
     
-    // 应用内悬浮窗（仅当前APP内显示）
-    private lateinit var agentFloatingWindow: AgentFloatingWindowManager
+
     
     // 权限请求码
     private val PERMISSION_REQUEST_CODE = 1001
@@ -59,8 +59,8 @@ class MainActivity : AppCompatActivity() {
         initViews()
         setupNavigation()
         setupFunctionClicks()
-        // 初始化并显示应用内悬浮窗
-        setupFloatingWindow()
+        // 初始化并连接MobileService
+        connectToMobileService()
 
     }
     
@@ -291,57 +291,53 @@ class MainActivity : AppCompatActivity() {
     }
     
     /**
-     * 设置悬浮窗（可选：如需在进入首页就展示）
+     * 连接到MobileService并设置当前Activity
      */
-    private fun setupFloatingWindow() {
-        agentFloatingWindow = AgentFloatingWindowManager(this)
-        findViewById<View>(android.R.id.content).post {
-            agentFloatingWindow.showFloatingWindow()
+    private fun connectToMobileService() {
+        // 绑定到MobileService
+        val serviceIntent = Intent(this, MobileService::class.java)
+        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    private val serviceConnection = object : android.content.ServiceConnection {
+        override fun onServiceConnected(name: android.content.ComponentName?, service: android.os.IBinder?) {
+            val binder = service as Agent.MobileService.LocalBinder
+            mobileService = binder.getService()
+            // 通知服务当前Activity
+            mobileService?.setCurrentActivity(this@MainActivity)
+        }
+
+        override fun onServiceDisconnected(name: android.content.ComponentName?) {
+            mobileService = null
         }
     }
+
+    private var mobileService: Agent.MobileService? = null
     
-    /**
-     * 切换悬浮窗显示状态
-     */
-    fun toggleFloatingWindow() {
-        agentFloatingWindow.toggleFloatingWindow()
-    }
-    
-    /**
-     * 显示悬浮窗
-     */
-    fun showFloatingWindow() {
-        agentFloatingWindow.showFloatingWindow()
-    }
-    
-    /**
-     * 隐藏悬浮窗
-     */
-    fun hideFloatingWindow() {
-        agentFloatingWindow.hideFloatingWindow()
-    }
+
     
     override fun onDestroy() {
         super.onDestroy()
-        // 清理悬浮窗
-        if (::agentFloatingWindow.isInitialized) {
-            agentFloatingWindow.cleanup()
+        // 解绑服务
+        if (mobileService != null) {
+            mobileService?.setCurrentActivity(null) // 通知服务Activity不再活跃
+            try {
+                unbindService(serviceConnection)
+            } catch (e: IllegalArgumentException) {
+                // 服务未绑定的情况
+            }
         }
     }
     
     override fun onPause() {
         super.onPause()
-        // 暂停时隐藏悬浮窗（按需）
-        if (::agentFloatingWindow.isInitialized && agentFloatingWindow.isFloatingWindowShowing()) {
-            agentFloatingWindow.hideFloatingWindow()
-        }
+        // 通知服务Activity暂停
+        mobileService?.setCurrentActivity(null)
     }
     
     override fun onResume() {
         super.onResume()
-        // 恢复时显示悬浮窗
-        if (::agentFloatingWindow.isInitialized && !agentFloatingWindow.isFloatingWindowShowing()) {
-            agentFloatingWindow.showFloatingWindow()
-        }
+        // 通知服务Activity恢复
+        mobileService?.setCurrentActivity(this)
     }
 }

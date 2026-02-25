@@ -43,7 +43,7 @@ class MobileService : Service() {
     private var wsClient: WebSocketClient? = null  // WebSocket客户端
     private var wsListener: WebSocketClient.WebSocketListener? = null
     private lateinit var mSpeech: MobileGPTSpeechRecognizer
-    private lateinit var agentFloatingWindow: AgentFloatingWindowManager
+    private var agentFloatingWindow: AgentFloatingWindowManager? = null
     private var mMobileGPTGlobal: MobileGPTGlobal? = null
     private var questionHandler: InteractionQuestionHandler? = null  // Phase 3: 交互式问答处理器
     
@@ -51,6 +51,9 @@ class MobileService : Service() {
     private var targetPackageName: String? = null
     private lateinit var mExecutorService: ExecutorService
     private val mainThreadHandler = Handler(Looper.getMainLooper())
+    
+    // 活动跟踪相关
+    private var currentActivity: Activity? = null
     
 
     // WebSocket相关变量
@@ -270,9 +273,7 @@ class MobileService : Service() {
             // 旧客户端已移除，无需清理
             
             // 清理悬浮窗资源
-            if (::agentFloatingWindow.isInitialized) {
-                agentFloatingWindow.cleanup()
-            }
+        agentFloatingWindow?.cleanup()
             
             // 关闭线程池
             if (::mExecutorService.isInitialized) {
@@ -645,6 +646,84 @@ class MobileService : Service() {
     /**
      * 获取或创建设备ID
      */
+     
+     /**
+      * 设置当前活动，用于显示应用内悬浮窗
+      */
+     fun setCurrentActivity(activity: Activity?) {
+         currentActivity = activity
+         
+         if (activity != null) {
+             // 如果有新的Activity且悬浮窗尚未初始化，尝试初始化
+             if (agentFloatingWindow == null) {
+                 agentFloatingWindow = AgentFloatingWindowManager(activity)
+                 // 延迟一点显示悬浮窗，确保Activity完全加载
+                 mainThreadHandler.postDelayed({
+                     agentFloatingWindow?.showFloatingWindow()
+                 }, 1000) // 延迟1秒显示
+             } else if (!agentFloatingWindow!!.isFloatingWindowShowing()) {
+                 // 如果悬浮窗已存在但未显示，尝试显示
+                 agentFloatingWindow?.showFloatingWindow()
+             }
+         } else {
+             // Activity为null时，隐藏悬浮窗
+             agentFloatingWindow?.hideFloatingWindow()
+         }
+     }
+     
+     /**
+      * 显示悬浮窗
+      */
+     fun showFloatingWindow() {
+         if (currentActivity != null && agentFloatingWindow != null) {
+             agentFloatingWindow?.showFloatingWindow()
+         } else if (currentActivity != null) {
+             // 如果没有悬浮窗实例但有Activity，创建并显示
+             agentFloatingWindow = AgentFloatingWindowManager(currentActivity!!)
+             agentFloatingWindow?.showFloatingWindow()
+         }
+     }
+     
+     /**
+      * 隐藏悬浮窗
+      */
+     fun hideFloatingWindow() {
+         agentFloatingWindow?.hideFloatingWindow()
+     }
+     
+     /**
+      * 切换悬浮窗显示状态
+      */
+     fun toggleFloatingWindow() {
+         if (currentActivity != null) {
+             if (agentFloatingWindow == null) {
+                 agentFloatingWindow = AgentFloatingWindowManager(currentActivity!!)
+             }
+             agentFloatingWindow?.toggleFloatingWindow()
+         }
+     }
+     
+     /**
+      * 检查悬浮窗是否正在显示
+      */
+     fun isFloatingWindowShowing(): Boolean {
+         return agentFloatingWindow?.isFloatingWindowShowing() == true
+     }
+     
+     /**
+      * 显示ask对话框
+      */
+     fun showAskDialog(infoName: String, question: String) {
+         if (currentActivity != null) {
+             if (agentFloatingWindow == null) {
+                 agentFloatingWindow = AgentFloatingWindowManager(currentActivity!!)
+             }
+             agentFloatingWindow?.showAskDialog(infoName, question)
+         } else {
+             Log.w(TAG, "没有可用的Activity上下文来显示ask对话框")
+         }
+     }
+
     private fun getOrCreateDeviceId(): String {
         val prefs = getSharedPreferences("droidrun_prefs", Context.MODE_PRIVATE)
         var deviceId = prefs.getString(MobileGPTGlobal.DEVICE_ID_KEY, null)
