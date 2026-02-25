@@ -81,11 +81,16 @@ class CodeActAgent(Workflow):
 
         self.tool_list = {}
 
+        logger.debug(f"Filtering tools for persona {persona.name}. Allowed: {persona.allowed_tools}")
         for tool_name in persona.allowed_tools:
             if tool_name in all_tools_list:
                 self.tool_list[tool_name] = all_tools_list[tool_name]
+                logger.debug(f"  - Tool '{tool_name}' added.")
+            else:
+                logger.warning(f"  - Tool '{tool_name}' NOT found in all_tools_list!")
 
         self.tool_descriptions = chat_utils.parse_tool_descriptions(self.tool_list)
+        logger.info(f"🔩 Found {len(self.tool_list)} tools for persona {persona.name}: {list(self.tool_list.keys())}")
 
         # 获取当前日期（用于 system_prompt 中的 {formatted_date} 占位符）
         from datetime import datetime
@@ -94,10 +99,14 @@ class CodeActAgent(Workflow):
         weekday = weekday_names[today.weekday()]
         formatted_date = today.strftime("%Y年%m月%d日") + " " + weekday
 
-        self.system_prompt_content = persona.system_prompt.format(
-            tool_descriptions=self.tool_descriptions,
-            formatted_date=formatted_date
-        )
+        # 安全地进行 format，避免因为 {think} 和 {action} 导致 KeyError
+        # 我们只替换我们关心的占位符
+        self.system_prompt_content = persona.system_prompt
+        if "{tool_descriptions}" in self.system_prompt_content:
+            self.system_prompt_content = self.system_prompt_content.replace("{tool_descriptions}", self.tool_descriptions)
+        if "{formatted_date}" in self.system_prompt_content:
+            self.system_prompt_content = self.system_prompt_content.replace("{formatted_date}", formatted_date)
+            
         self.system_prompt = ChatMessage(
             role="system", content=self.system_prompt_content
         )
@@ -186,7 +195,8 @@ class CodeActAgent(Workflow):
             chat_history = await chat_utils.add_memory_block(self.remembered_info, chat_history)
 
         # 统一先取一次状态（包含截图引用），后续根据需要下载截图字节
-        state = await self.tools.get_state_async(include_screenshot=False)
+        include_screenshot = any(c == "screenshot" for c in self.required_context)
+        state = await self.tools.get_state_async(include_screenshot=include_screenshot)
         try:
             a11y_tree = state.get("a11y_tree")
             phone_state = state.get("phone_state")
@@ -195,6 +205,10 @@ class CodeActAgent(Workflow):
             if a11y_tree:
                 element_count = len(a11y_tree) if isinstance(a11y_tree, list) else 0
                 logger.info(f"✅ a11y_tree 已获取，包含 {element_count} 个顶层元素")
+                # 如果只有 1 个顶层元素，打印一下具体内容
+                if element_count == 1:
+                    logger.debug(f"Top element details: {a11y_tree[0].get('className')} - {a11y_tree[0].get('text')}")
+                
                 await ctx.store.set("ui_state", a11y_tree)
                 ctx.write_event_to_stream(RecordUIStateEvent(ui_state=a11y_tree))
                 chat_history = await chat_utils.add_ui_text_block(a11y_tree, chat_history, persona_name=self.persona.name)
@@ -402,8 +416,13 @@ class CodeActAgent(Workflow):
         limited_history = self._limit_history(chat_history)
         messages_to_send = [self.system_prompt] + limited_history
         messages_to_send = [chat_utils.message_copy(msg) for msg in messages_to_send]
+        
+        # 记录发送给 LLM 的消息概要
+        logger.debug(f"Sending {len(messages_to_send)} messages to LLM ({self.llm.class_name()})")
+        
         try:
-            response = await self.llm.achat(messages=messages_to_send)
+            # 使用 wait_for 增加超时控制，防止无限挂起
+            response = await asyncio.wait_for(self.llm.achat(messages=messages_to_send), timeout=120.0)
             
             # 计算 LLM 思考耗时
             thinking_time = time.time() - llm_start_time

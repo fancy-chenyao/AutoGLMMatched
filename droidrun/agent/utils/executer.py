@@ -43,9 +43,23 @@ class SimpleCodeExecutor:
     """
 
         self.tools_instance = tools_instance
+        self.loop = loop
 
         # loop throught tools and add them to globals, provide sync wrappers for async tools
         # e.g. tools = {'tool_name': tool_function}
+        
+        def create_sync_wrapper(async_func):
+            def sync_wrapper(*args, **kwargs):
+                # Always use the executor's loop to schedule coroutines
+                try:
+                    # If we are already in the executor loop's thread, we can't block.
+                    # But this wrapper is intended to be called from the worker thread.
+                    future = asyncio.run_coroutine_threadsafe(async_func(*args, **kwargs), self.loop)
+                    return future.result(timeout=120)  # Increased timeout for long operations
+                except Exception as e:
+                    logger.error(f"Error in sync wrapper for {async_func.__name__}: {e}")
+                    raise
+            return sync_wrapper
 
         # check if tools is a dictionary
         if isinstance(tools, dict):
@@ -54,23 +68,6 @@ class SimpleCodeExecutor:
             )
             for tool_name, tool_function in tools.items():
                 if asyncio.iscoroutinefunction(tool_function):
-                    # Create a sync wrapper that schedules the async function properly
-                    def create_sync_wrapper(async_func):
-                        def sync_wrapper(*args, **kwargs):
-                            # Get the current event loop
-                            try:
-                                loop = asyncio.get_running_loop()
-                                # Schedule the coroutine in the current loop and wait for result
-                                future = asyncio.run_coroutine_threadsafe(async_func(*args, **kwargs), loop)
-                                return future.result(timeout=5)  # 5秒超时，避免30秒延迟
-                            except RuntimeError:
-                                # No event loop running, use asyncio.run
-                                return asyncio.run(async_func(*args, **kwargs))
-                            except Exception as e:
-                                logger.error(f"Error in sync wrapper for {async_func.__name__}: {e}")
-                                raise
-                        return sync_wrapper
-                    
                     # Add sync wrapper to globals
                     globals[tool_name] = create_sync_wrapper(tool_function)
                 else:
@@ -81,23 +78,6 @@ class SimpleCodeExecutor:
             # If tools is a list, convert it to a dictionary with tool name as key and function as value
             for tool in tools:
                 if asyncio.iscoroutinefunction(tool):
-                    # Create a sync wrapper that schedules the async function properly
-                    def create_sync_wrapper(async_func):
-                        def sync_wrapper(*args, **kwargs):
-                            # Get the current event loop
-                            try:
-                                loop = asyncio.get_running_loop()
-                                # Schedule the coroutine in the current loop and wait for result
-                                future = asyncio.run_coroutine_threadsafe(async_func(*args, **kwargs), loop)
-                                return future.result(timeout=5)  # 5秒超时，避免30秒延迟
-                            except RuntimeError:
-                                # No event loop running, use asyncio.run
-                                return asyncio.run(async_func(*args, **kwargs))
-                            except Exception as e:
-                                logger.error(f"Error in sync wrapper for {async_func.__name__}: {e}")
-                                raise
-                        return sync_wrapper
-                    
                     # Add sync wrapper to globals
                     globals[tool.__name__] = create_sync_wrapper(tool)
                 else:

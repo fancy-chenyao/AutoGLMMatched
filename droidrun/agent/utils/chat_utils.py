@@ -47,7 +47,7 @@ async def add_reflection_summary(reflection: Reflection, chat_history: List[Chat
     
     return chat_history
 
-def _format_ui_elements(ui_data, level=0) -> str:
+def _format_ui_elements(ui_data, level=0, hide_index=False) -> str:
     """Format UI elements in natural language: index. className: resourceId, text - bounds"""
     if not ui_data:
         return ""
@@ -74,7 +74,7 @@ def _format_ui_elements(ui_data, level=0) -> str:
         
         # Format the line: index. className: resourceId, text, parentIndex, clickable - bounds
         line_parts = []
-        if index != '':
+        if not hide_index and index != '':
             line_parts.append(f"{index}.")
         if class_name:
             line_parts.append(class_name + ":")
@@ -97,7 +97,7 @@ def _format_ui_elements(ui_data, level=0) -> str:
         
         # Recursively format children with increased indentation
         if children:
-            child_formatted = _format_ui_elements(children, level + 1)
+            child_formatted = _format_ui_elements(children, level + 1, hide_index=hide_index)
             if child_formatted:
                 formatted_lines.append(child_formatted)
     
@@ -113,12 +113,13 @@ async def add_ui_text_block(ui_state: str, chat_history: List[ChatMessage], pers
         
         try:
             ui_data = json.loads(ui_state) if isinstance(ui_state, str) else ui_state
-            formatted_ui = _format_ui_elements(ui_data)
             
-            # If AutoGLM-Phone, use a more concise header
+            # If AutoGLM-Phone, use a more concise header and hide index
             if persona_name == "AutoGLM-Phone":
+                formatted_ui = _format_ui_elements(ui_data, hide_index=True)
                 text = f"** UI Elements **\n\n{formatted_ui}"
             else:
+                formatted_ui = _format_ui_elements(ui_data, hide_index=False)
                 text = f"""
 Current UI elements from the device in the schema 'index. className: resourceId, text, clickable=true/false - bounds(x1,y1,x2,y2)':
 
@@ -139,7 +140,7 @@ Elements:
         chat_history[-1].blocks.append(ui_block)
     return chat_history
 
-async def add_screenshot_image_block(screenshot, chat_history: List[ChatMessage], copy = True) -> None:
+async def add_screenshot_image_block(screenshot, chat_history: List[ChatMessage], copy = True) -> List[ChatMessage]:
     if screenshot:
         image_block = ImageBlock(image=screenshot)
         if copy:

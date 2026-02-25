@@ -242,7 +242,8 @@ class DroidAgent(Workflow):
         self.task_manager = TaskManager()
         self.task_iter = None
 
-        self.cim = ContextInjectionManager(personas=personas)
+        self.personas = personas or [DEFAULT]
+        self.cim = ContextInjectionManager(personas=self.personas)
         self.current_episodic_memory = None
 
         LoggingUtils.log_info("DroidAgent", "Initializing DroidAgent...")
@@ -337,7 +338,14 @@ class DroidAgent(Workflow):
         """
         task: Task = ev.task
         reflection = ev.reflection if ev.reflection is not None else None
-        persona = self.cim.get_persona(task.agent_type) or DEFAULT
+        
+        # 优先从 CIM 获取，如果没找到且我们只有一个 persona，则使用该 persona
+        persona = self.cim.get_persona(task.agent_type)
+        if not persona and len(self.personas) == 1:
+            persona = self.personas[0]
+            LoggingUtils.log_debug("DroidAgent", "Using the only available persona: {name}", name=persona.name)
+        
+        persona = persona or DEFAULT
 
         LoggingUtils.log_progress("DroidAgent", "Executing task: {description}", description=task.description)
 
@@ -461,14 +469,22 @@ class DroidAgent(Workflow):
                     task = Task(
                         description=enhanced_goal,
                         status=self.task_manager.STATUS_PENDING,
-                        agent_type="Default",
+                        agent_type=self.personas[0].name if self.personas else "Default",
                     )
-                    LoggingUtils.log_info("DroidAgent", "🔄 Cold start task created with explicit field requirements")
+                    LoggingUtils.log_info("DroidAgent", "🔄 Cold start task created with persona: {name}", name=task.agent_type)
+            else:
+                pass
+
+            # Determine vision capability based on persona if not explicitly set
+            effective_vision = self.vision
+            if persona.name == "AutoGLM-Phone":
+                effective_vision = True
+                LoggingUtils.log_info("DroidAgent", "Vision enabled for AutoGLM-Phone persona")
 
             codeact_agent = CodeActAgent(
                 llm=self.llm,
                 persona=persona,
-                vision=self.vision,
+                vision=effective_vision,
                 max_steps=self.max_codeact_steps,
                 all_tools_list=self.tool_list,
                 tools_instance=self.tools_instance,
