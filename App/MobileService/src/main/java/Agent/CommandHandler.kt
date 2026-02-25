@@ -97,109 +97,128 @@ object CommandHandler {
         activity: Activity?,
         callback: (JSONObject) -> Unit
     ) {
-        if (activity == null) {
-            callback(createErrorResponse("No active activity"))
-            return
-        }
+        // 添加重试机制，当activity为null时尝试获取
+        val handler = Handler(Looper.getMainLooper())
+        val maxRetries = 3
+        var retryCount = 0
         
-        // 为回调添加超时保护
-        val protectedCallback = createTimeoutProtectedCallback(
-            timeoutMs = MobileGPTGlobal.COMMAND_TIMEOUT,
-            originalCallback = callback
-        )
-        
-        when (command) {
-            "take_screenshot" -> {
-                val handler = Handler(Looper.getMainLooper())
-                val stabilizeTimeout = params.optLong("stabilize_timeout_ms", 5000L)
-                val stableWindow = params.optLong("stable_window_ms", 500L)
-                val waitStart = System.currentTimeMillis()
-                PageStableVerifier.waitUntilStable(
-                    handler = handler,
-                    getCurrentActivity = { ActivityTracker.getCurrentActivity() },
-                    timeoutMs = stabilizeTimeout,
-                    minStableMs = stableWindow,
-                    intervalMs = 100L
-                ) {
-                    val waitedMs = System.currentTimeMillis() - waitStart
-                    Log.d(TAG, "截图前页面稳定等待耗时: ${waitedMs}ms (timeout=${stabilizeTimeout}ms, stable_window=${stableWindow}ms)")
-                    val current = ActivityTracker.getCurrentActivity() ?: activity
-                    handleTakeScreenshot(requestId, params, current) { resp ->
-                        try {
-                            if (resp.optString("status") == "success") {
-                                resp.put("wait_stable_ms", waitedMs)
+        fun attemptHandleCommand() {
+            val currentActivity = ActivityTracker.getCurrentActivity() ?: activity
+            if (currentActivity != null) {
+                // 为回调添加超时保护
+                val protectedCallback = createTimeoutProtectedCallback(
+                    timeoutMs = MobileGPTGlobal.COMMAND_TIMEOUT,
+                    originalCallback = callback
+                )
+                
+                when (command) {
+                    "take_screenshot" -> {
+                        val stabilizeTimeout = params.optLong("stabilize_timeout_ms", 5000L)
+                        val stableWindow = params.optLong("stable_window_ms", 500L)
+                        val waitStart = System.currentTimeMillis()
+                        PageStableVerifier.waitUntilStable(
+                            handler = handler,
+                            getCurrentActivity = { ActivityTracker.getCurrentActivity() },
+                            timeoutMs = stabilizeTimeout,
+                            minStableMs = stableWindow,
+                            intervalMs = 100L
+                        ) {
+                            val waitedMs = System.currentTimeMillis() - waitStart
+                            Log.d(TAG, "截图前页面稳定等待耗时: ${waitedMs}ms (timeout=${stabilizeTimeout}ms, stable_window=${stableWindow}ms)")
+                            val current = ActivityTracker.getCurrentActivity() ?: currentActivity
+                            handleTakeScreenshot(requestId, params, current) { resp ->
+                                try {
+                                    if (resp.optString("status") == "success") {
+                                        resp.put("wait_stable_ms", waitedMs)
+                                    }
+                                } finally {
+                                    protectedCallback(resp)
+                                }
                             }
-                        } finally {
-                            protectedCallback(resp)
                         }
                     }
-                }
-            }
-            "get_state" -> {
-                val handler = Handler(Looper.getMainLooper())
-                val stabilizeTimeout = params.optLong("stabilize_timeout_ms", 5000L)
-                val stableWindow = params.optLong("stable_window_ms", 500L)
-                val waitStart = System.currentTimeMillis()
-                PageStableVerifier.waitUntilStable(
-                    handler = handler,
-                    getCurrentActivity = { ActivityTracker.getCurrentActivity() },
-                    timeoutMs = stabilizeTimeout,
-                    minStableMs = stableWindow,
-                    intervalMs = 100L
-                ) {
-                    val waitedMs = System.currentTimeMillis() - waitStart
-                    Log.d(TAG, "页面稳定等待耗时: ${waitedMs}ms (timeout=${stabilizeTimeout}ms, stable_window=${stableWindow}ms)")
-                    handleGetState(requestId, params, activity, protectedCallback)
-                }
-            }
-            "tap" -> {
-                handleTap(requestId, params, activity, protectedCallback)
-            }
-            "tap_by_index" -> {
-                handleTap(requestId, params, activity, protectedCallback)
-            }
-            "swipe" -> {
-                handleSwipe(requestId, params, activity, protectedCallback)
-            }
-            "input_text" -> {
-                handleInputText(requestId, params, activity, protectedCallback)
-            }
-            "back" -> {
-                handleBack(requestId, params, activity, protectedCallback)
-            }
-            "home" -> {
-                handleHome(requestId, params, activity, protectedCallback)
-            }
+                    "get_state" -> {
+                        val stabilizeTimeout = params.optLong("stabilize_timeout_ms", 5000L)
+                        val stableWindow = params.optLong("stable_window_ms", 500L)
+                        val waitStart = System.currentTimeMillis()
+                        PageStableVerifier.waitUntilStable(
+                            handler = handler,
+                            getCurrentActivity = { ActivityTracker.getCurrentActivity() },
+                            timeoutMs = stabilizeTimeout,
+                            minStableMs = stableWindow,
+                            intervalMs = 100L
+                        ) {
+                            val waitedMs = System.currentTimeMillis() - waitStart
+                            Log.d(TAG, "页面稳定等待耗时: ${waitedMs}ms (timeout=${stabilizeTimeout}ms, stable_window=${stableWindow}ms)")
+                            val current = ActivityTracker.getCurrentActivity() ?: currentActivity
+                            if (current == null) {
+                                protectedCallback(createErrorResponse("No active activity"))
+                                return@waitUntilStable
+                            }
+                            handleGetState(requestId, params, current, protectedCallback)
+                        }
+                    }
+                    "tap" -> {
+                        handleTap(requestId, params, currentActivity, protectedCallback)
+                    }
+                    "tap_by_index" -> {
+                        handleTap(requestId, params, currentActivity, protectedCallback)
+                    }
+                    "swipe" -> {
+                        handleSwipe(requestId, params, currentActivity, protectedCallback)
+                    }
+                    "input_text" -> {
+                        handleInputText(requestId, params, currentActivity, protectedCallback)
+                    }
+                    "back" -> {
+                        handleBack(requestId, params, currentActivity, protectedCallback)
+                    }
+                    "home" -> {
+                        handleHome(requestId, params, currentActivity, protectedCallback)
+                    }
 
-            "double tap" -> {
-                handleDoubleTap(requestId, params, activity, protectedCallback)
-            }
-            "long press" -> {
-                handleLongPress(requestId, params, activity, protectedCallback)
-            }
-            "wait" -> {
-                handleWait(requestId, params, activity, protectedCallback)
-            }
-            "take_over" -> {
-                handleTakeOver(requestId, params, activity, protectedCallback)
-            }
-            "note" -> {
-                handleNote(requestId, params, activity, protectedCallback)
-            }
-            "call_api" -> {
-                handleCallApi(requestId, params, activity, protectedCallback)
-            }
-            "interact" -> {
-                handleInteract(requestId, params, activity, protectedCallback)
-            }
-            "finish" -> {
-                handleFinish(requestId, params, activity, protectedCallback)
-            }
-            else -> {
-                Log.w(TAG, "未知命令: $command")
-                protectedCallback(createErrorResponse("Unknown command: $command"))
+                    "double tap" -> {
+                        handleDoubleTap(requestId, params, currentActivity, protectedCallback)
+                    }
+                    "long press" -> {
+                        handleLongPress(requestId, params, currentActivity, protectedCallback)
+                    }
+                    "wait" -> {
+                        handleWait(requestId, params, currentActivity, protectedCallback)
+                    }
+                    "take_over" -> {
+                        handleTakeOver(requestId, params, currentActivity, protectedCallback)
+                    }
+                    "note" -> {
+                        handleNote(requestId, params, currentActivity, protectedCallback)
+                    }
+                    "call_api" -> {
+                        handleCallApi(requestId, params, currentActivity, protectedCallback)
+                    }
+                    "interact" -> {
+                        handleInteract(requestId, params, currentActivity, protectedCallback)
+                    }
+                    "finish" -> {
+                        handleFinish(requestId, params, currentActivity, protectedCallback)
+                    }
+                    else -> {
+                        Log.w(TAG, "未知命令: $command")
+                        protectedCallback(createErrorResponse("Unknown command: $command"))
+                    }
+                }
+            } else {
+                retryCount++
+                if (retryCount <= maxRetries) {
+                    Log.d(TAG, "未找到活动Activity，${retryCount}次后重试，延迟100ms...")
+                    handler.postDelayed({ attemptHandleCommand() }, 100)
+                } else {
+                    Log.w(TAG, "重试${maxRetries}次后仍未找到活动Activity")
+                    callback(createErrorResponse("No active activity"))
+                }
             }
         }
+        
+        attemptHandleCommand()
     }
     
     /**
