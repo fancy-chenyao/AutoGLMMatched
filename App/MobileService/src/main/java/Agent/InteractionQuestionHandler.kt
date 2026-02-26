@@ -53,11 +53,12 @@ class InteractionQuestionHandler(
      */
     fun handleQuestionMessage(message: JSONObject) {
         try {
-            val questionId = message.getString("question_id")
-            val questionText = message.getString("question_text")
-            val questionType = message.getString("question_type")
-            val defaultValue = message.optString("default_value", "")
-            val timeoutSeconds = message.optDouble("timeout_seconds", 60.0)
+            val data = message.getJSONObject("data")
+            val questionId = data.getString("question_id")
+            val questionText = data.getString("question_text")
+            val questionType = data.getString("question_type")
+            val defaultValue = data.optString("default_value", "")
+            val timeoutSeconds = data.optDouble("timeout_seconds", 60.0)
             
             Log.d(TAG, "收到问题: id=$questionId, type=$questionType")
             Log.d(TAG, "问题文本: $questionText")
@@ -72,7 +73,7 @@ class InteractionQuestionHandler(
                         timeoutSeconds
                     )
                     TYPE_CHOICE -> {
-                        val options = message.optJSONArray("options") ?: JSONArray()
+                        val options = data.optJSONArray("options") ?: JSONArray()
                         showChoiceDialog(
                             questionId,
                             questionText,
@@ -100,6 +101,13 @@ class InteractionQuestionHandler(
     }
     
     /**
+     * 获取当前的Activity上下文
+     */
+    private fun getCurrentContext(): Context {
+        return ActivityTracker.getCurrentActivity() ?: context
+    }
+    
+    /**
      * 显示文本输入对话框
      */
     private fun showTextInputDialog(
@@ -111,8 +119,15 @@ class InteractionQuestionHandler(
         // 关闭之前的对话框（如果有）
         dismissCurrentDialog()
         
+        val currentContext = getCurrentContext()
+        if (currentContext !is android.app.Activity) {
+            Log.e(TAG, "无法显示对话框：当前上下文不是Activity")
+            sendAnswer(questionId, defaultValue)
+            return
+        }
+        
         // 创建输入框
-        val input = EditText(context).apply {
+        val input = EditText(currentContext).apply {
             setText(defaultValue)
             setSingleLine()
             // 自动选择所有文本
@@ -123,7 +138,7 @@ class InteractionQuestionHandler(
         }
         
         // 创建对话框
-        val dialog = AlertDialog.Builder(context)
+        val dialog = AlertDialog.Builder(currentContext)
             .setTitle("Agent 询问")
             .setMessage(questionText)
             .setView(input)
@@ -163,6 +178,13 @@ class InteractionQuestionHandler(
         // 关闭之前的对话框（如果有）
         dismissCurrentDialog()
         
+        val currentContext = getCurrentContext()
+        if (currentContext !is android.app.Activity) {
+            Log.e(TAG, "无法显示对话框：当前上下文不是Activity")
+            sendAnswer(questionId, defaultValue)
+            return
+        }
+        
         // 转换选项
         val items = Array(options.length()) { i ->
             options.getString(i)
@@ -180,12 +202,15 @@ class InteractionQuestionHandler(
         }
         var selectedIndex = defaultIndex
         
+        Log.d(TAG, "选项列表: ${items.contentToString()}")
+        Log.d(TAG, "默认选中项: $defaultIndex (${items.getOrNull(defaultIndex)})")
+        
         // 创建对话框
-        val dialog = AlertDialog.Builder(context)
+        val dialog = AlertDialog.Builder(currentContext)
             .setTitle("Agent 询问")
-            .setMessage(questionText)
             .setSingleChoiceItems(items, defaultIndex) { _, which ->
                 selectedIndex = which
+                Log.d(TAG, "用户选择了索引: $which, 值: ${items[which]}")
             }
             .setPositiveButton("确定") { dialog, _ ->
                 val answer = items[selectedIndex]
@@ -222,8 +247,15 @@ class InteractionQuestionHandler(
         // 关闭之前的对话框（如果有）
         dismissCurrentDialog()
         
+        val currentContext = getCurrentContext()
+        if (currentContext !is android.app.Activity) {
+            Log.e(TAG, "无法显示对话框：当前上下文不是Activity")
+            sendAnswer(questionId, defaultValue)
+            return
+        }
+        
         // 创建对话框
-        val dialog = AlertDialog.Builder(context)
+        val dialog = AlertDialog.Builder(currentContext)
             .setTitle("Agent 询问")
             .setMessage(questionText)
             .setPositiveButton("是") { dialog, _ ->
@@ -282,11 +314,15 @@ class InteractionQuestionHandler(
      */
     private fun sendAnswer(questionId: String, answer: String) {
         try {
-            val answerMessage = JSONObject().apply {
-                put("type", "user_answer")
+            val data = JSONObject().apply {
                 put("question_id", questionId)
                 put("answer", answer)
                 put("timestamp", System.currentTimeMillis())
+            }
+            
+            val answerMessage = JSONObject().apply {
+                put("type", "user_answer")
+                put("data", data)
             }
             
             webSocketClient.sendMessage(answerMessage)
