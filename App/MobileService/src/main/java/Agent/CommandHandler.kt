@@ -22,6 +22,7 @@ import Agent.ActivityTracker
 import controller.ElementController
 import controller.GenericElement
 import controller.NativeController
+import controller.UIUtils
 import controller.PageSniffer
 import controller.WebViewController
 import org.json.JSONObject
@@ -182,6 +183,12 @@ object CommandHandler {
                     }
                     "long press" -> {
                         handleLongPress(requestId, params, currentActivity, protectedCallback)
+                    }
+                    "press_key" -> {
+                        handlePressKey(requestId, params, activity, protectedCallback)
+                    }
+                    "type" -> {
+                        handlePressKey(requestId, params, activity, protectedCallback)
                     }
                     "wait" -> {
                         handleWait(requestId, params, currentActivity, protectedCallback)
@@ -563,9 +570,14 @@ object CommandHandler {
                     callback(createErrorResponse("Tap coordinates not resolved"))
                     return@post
                 }
-                
+                // 归一化坐标转换为DP坐标（仅当来源为坐标参数时）
+                val (tapXDp, tapYDp) = if (fromIndex) {
+                    Pair(tapX!!.toFloat(), tapY!!.toFloat())
+                } else {
+                    normalizedToDp(activity, tapX!!, tapY!!)
+                }
                 // 执行坐标点击（dp单位）
-                ElementController.clickByCoordinateDp(activity, tapX.toFloat(), tapY.toFloat()) { success ->
+                ElementController.clickByCoordinateDp(activity, tapXDp, tapYDp) { success ->
                     if (!success) {
                         Log.w(TAG, "tap命令执行失败: 点击操作返回false")
                         callback(createErrorResponse("Tap action failed"))
@@ -673,6 +685,28 @@ object CommandHandler {
     }
     
     /**
+     * 将归一化坐标转换为DP坐标（基于rootView尺寸）
+     * 说明：
+     * - 以 decorView.rootView 的 width/height 作为归一化基准，保持与截图坐标体系一致
+     * - 为兼容窗口坐标，y 叠加状态栏高度，使触控注入与窗口坐标对齐
+     */
+    private fun normalizedToDp(activity: Activity, xNorm: Int, yNorm: Int): Pair<Float, Float> {
+        val density = activity.resources.displayMetrics.density
+        val rootView = activity.window?.decorView?.rootView
+            ?: throw IllegalStateException("rootView为空")
+        if (rootView.width <= 0 || rootView.height <= 0) {
+            throw IllegalStateException("rootView尚未完成布局，width/height=0")
+        }
+        val rootWidthDp = rootView.width / density
+        val rootHeightDp = rootView.height / density
+        val xDp = (xNorm.toFloat() / 1000f) * rootWidthDp
+        var yDp = (yNorm.toFloat() / 1000f) * rootHeightDp
+        // val statusBarDp = UIUtils.getStatusBarHeight(activity) / density
+        // yDp += statusBarDp
+        return Pair(xDp, yDp)
+    }
+    
+    /**
      * 处理swipe命令 - 滑动操作
      */
     /**
@@ -730,12 +764,15 @@ object CommandHandler {
                 val preHash = PageChangeVerifier.computePreViewTreeHash(activity)
                 val preWebHash = PageChangeVerifier.computePreWebViewAggHash(activity)
                 // 根据页面类型分发滑动
+                // 将归一化坐标转换为DP坐标
+                val (startXDpConv, startYDpConv) = normalizedToDp(activity, startX!!, startY!!)
+                val (endXDpConv, endYDpConv) = normalizedToDp(activity, endX!!, endY!!)
                 ElementController.scrollByTouchDp(
                     activity = activity,
-                    startXDp = startX.toFloat(),
-                    startYDp = startY.toFloat(),
-                    endXDp = endX.toFloat(),
-                    endYDp = endY.toFloat(),
+                    startXDp = startXDpConv,
+                    startYDp = startYDpConv,
+                    endXDp = endXDpConv,
+                    endYDp = endYDpConv,
                     duration = duration.toLong()
                 ) { success ->
                     if (success) {
@@ -833,9 +870,10 @@ object CommandHandler {
                         callback(createErrorResponse("Invalid element array"))
                         return@post
                     }
-                    val x = arr.optInt(0)
-                    val y = arr.optInt(1)
-                    findElementByCoordinate(elementTree, x, y)
+                    val xNorm = arr.optInt(0)
+                    val yNorm = arr.optInt(1)
+                    val (xDp, yDp) = normalizedToDp(activity, xNorm, yNorm)
+                    findElementByCoordinate(elementTree, xDp.toInt(), yDp.toInt())
                 } else {
                     findElementByIndex(elementTree, index)
                 }
@@ -980,14 +1018,19 @@ object CommandHandler {
                     callback(createErrorResponse("Missing element or index parameter"))
                     return@post
                 }
-                
-                ElementController.clickByCoordinateDp(activity, x!!.toFloat(), y!!.toFloat()) { first ->
+                // 归一化坐标转换为DP坐标（当来源为坐标参数时）
+                val (xDp, yDp) = if (hasElementArray) {
+                    normalizedToDp(activity, x!!, y!!)
+                } else {
+                    Pair(x!!.toFloat(), y!!.toFloat())
+                }
+                ElementController.clickByCoordinateDp(activity, xDp, yDp) { first ->
                     if (!first) {
                         callback(createErrorResponse("First tap failed"))
                         return@clickByCoordinateDp
                     }
                     Handler(Looper.getMainLooper()).postDelayed({
-                        ElementController.clickByCoordinateDp(activity, x!!.toFloat(), y!!.toFloat()) { second ->
+                        ElementController.clickByCoordinateDp(activity, xDp, yDp) { second ->
                             if (!second) {
                                 callback(createErrorResponse("Second tap failed"))
                                 return@clickByCoordinateDp
@@ -1084,8 +1127,13 @@ object CommandHandler {
                     callback(createErrorResponse("Missing element or index parameter"))
                     return@post
                 }
-                
-                ElementController.longClickByCoordinateDp(activity, x!!.toFloat(), y!!.toFloat()) { success ->
+                // 归一化坐标转换为DP坐标（当来源为坐标参数时）
+                val (xDp, yDp) = if (hasElementArray) {
+                    normalizedToDp(activity, x!!, y!!)
+                } else {
+                    Pair(x!!.toFloat(), y!!.toFloat())
+                }
+                ElementController.longClickByCoordinateDp(activity, xDp, yDp) { success ->
                     if (!success) {
                         callback(createErrorResponse("Long press action failed"))
                         return@longClickByCoordinateDp
@@ -1125,7 +1173,75 @@ object CommandHandler {
             }
         }
     }
-    
+        /**
+     * 处理press_key命令 - 按键操作
+     */
+    private fun handlePressKey(
+        requestId: String,
+        params: JSONObject,
+        activity: Activity?,
+        callback: (JSONObject) -> Unit
+    ) {
+        // 参数验证
+        if (!params.has("keycode")) {
+            Log.w(TAG, "press_key命令缺少参数: keycode")
+            callback(createErrorResponse("Missing keycode parameter"))
+            return
+        }
+        
+        val keycode = params.getInt("keycode")
+        
+        if (activity == null) {
+            Log.w(TAG, "press_key命令执行失败: Activity为空")
+            callback(createErrorResponse("No active activity"))
+            return
+        }
+        
+        Handler(Looper.getMainLooper()).post {
+            try {
+                val rootView = activity.findViewById<View>(android.R.id.content)
+                val downTime = SystemClock.uptimeMillis()
+                
+                // 创建按键按下事件
+                val downEvent = KeyEvent(downTime, downTime, KeyEvent.ACTION_DOWN, keycode, 0)
+                val downResult = rootView.dispatchKeyEvent(downEvent)
+                
+                // 创建按键抬起事件
+                val upEvent = KeyEvent(downTime, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keycode, 0)
+                val upResult = rootView.dispatchKeyEvent(upEvent)
+                
+                if (downResult && upResult) {
+                    // 动作前状态用于页面变化验证（按键前已计算）
+                    val preActivity = activity
+                    val preHash = PageChangeVerifier.computePreViewTreeHash(activity)
+                    // 成功后进行页面变化验证
+                    PageChangeVerifier.verifyActionWithPageChange(
+                        handler = Handler(Looper.getMainLooper()),
+                        getCurrentActivity = { ActivityTracker.getCurrentActivity() },
+                        preActivity = preActivity,
+                        preViewTreeHash = preHash,
+                        preWebViewAggHash = PageChangeVerifier.computePreWebViewAggHash(activity)
+                    ) { changed, changeType ->
+                        if (changed) {
+                            clearCache()
+                            Log.d(TAG, "press_key命令执行成功且检测到页面变化: keycode=$keycode, 类型=$changeType")
+                            val data = JSONObject().apply { put("page_change_type", changeType) }
+                            callback(createSuccessResponse(data))
+                        } else {
+                            Log.w(TAG, "press_key命令执行后未检测到页面变化")
+                            callback(createErrorResponse("Press key succeeded but page unchanged"))
+                        }
+                    }
+                } else {
+                    Log.w(TAG, "press_key命令执行失败: downResult=$downResult, upResult=$upResult")
+                    callback(createErrorResponse("Press key action failed"))
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "press_key命令执行异常: ${e.message}", e)
+                callback(createErrorResponse("Exception: ${e.message}"))
+            }
+        }
+    }
     /**
      * 处理wait命令 - 等待一段时间（占位）
      */
@@ -1285,7 +1401,9 @@ object CommandHandler {
     
     
     /**
-     * 异步截图功能（避免阻塞主线程）
+     * 异步截图功能（统一使用rootView尺寸）
+     * 说明：使用 decorView.rootView 的 width/height 与其在 Window 中的位置作为截图范围，
+     * 可包含对话框/弹窗等位于内容视图之外的窗口装饰或覆盖层
      */
     private fun takeScreenshotAsync(activity: Activity, callback: (Bitmap?) -> Unit) {
         try {
@@ -1295,18 +1413,24 @@ object CommandHandler {
                 callback(null)
                 return
             }
+            if (rootView.width <= 0 || rootView.height <= 0) {
+                Log.w(TAG, "根视图尚未完成布局，width/height=0")
+                callback(null)
+                return
+            }
             
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                // Android 8.0+ 使用PixelCopy
-                val bitmap = Bitmap.createBitmap(
-                    rootView.width,
-                    rootView.height,
-                    Bitmap.Config.ARGB_8888
-                )
+                // Android 8.0+ 使用PixelCopy，截取rootView所在矩形
+                val captureWidth = rootView.width
+                val captureHeight = rootView.height
+                val bitmap = Bitmap.createBitmap(captureWidth, captureHeight, Bitmap.Config.ARGB_8888)
+                val loc = IntArray(2)
+                rootView.getLocationInWindow(loc)
+                val rect = android.graphics.Rect(loc[0], loc[1], loc[0] + captureWidth, loc[1] + captureHeight)
                 
                 PixelCopy.request(
                     activity.window,
-                    android.graphics.Rect(0, 0, rootView.width, rootView.height),
+                    rect,
                     bitmap,
                     { copyResult ->
                         when (copyResult) {
@@ -1326,20 +1450,17 @@ object CommandHandler {
                     Handler(Looper.getMainLooper())
                 )
             } else {
-                // Android 7.x 使用DrawingCache（同步操作，但很快）
+                // Android 7.x：直接将rootView绘制到 Bitmap（避免 DrawingCache 兼容性问题）
                 try {
-                    rootView.isDrawingCacheEnabled = true
-                    rootView.buildDrawingCache(true)
-                    val bitmap = rootView.drawingCache?.copy(Bitmap.Config.ARGB_8888, false)
-                    rootView.isDrawingCacheEnabled = false
+                    val bmp = Bitmap.createBitmap(rootView.width, rootView.height, Bitmap.Config.ARGB_8888)
+                    val canvas = android.graphics.Canvas(bmp)
+                    rootView.draw(canvas)
                     
                     // 保存截图引用用于后续资源管理
-                    if (bitmap != null) {
-                        recycleOldScreenshot()
-                        lastScreenshot = bitmap
-                    }
+                    recycleOldScreenshot()
+                    lastScreenshot = bmp
                     
-                    callback(bitmap)
+                    callback(bmp)
                 } catch (e: Exception) {
                     Log.e(TAG, "DrawingCache截图失败", e)
                     callback(null)

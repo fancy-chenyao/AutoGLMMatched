@@ -83,7 +83,7 @@ object UIUtils {
      * @param y 点击位置的y坐标（px）
      * @param duration 发光效果持续时间（毫秒）
      */
-    fun showGlowEffect(activity: Activity, x: Float, y: Float, duration: Long = 1000) {
+    fun showGlowEffect(activity: Activity, x: Float, y: Float, duration: Long = 400) {
         activity.runOnUiThread {
             try {
                 // 获取内容区域根视图，与点击事件使用相同的坐标系统
