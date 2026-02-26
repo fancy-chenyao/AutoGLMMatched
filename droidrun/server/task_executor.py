@@ -71,6 +71,10 @@ class TaskExecutor:
             # 注册工具实例到服务器
             server.register_tools_instance(self.device_id, tools)
             
+            # 设置当前任务ID，用于主动问询 (InteractionManager)
+            if hasattr(tools, '_current_task_id'):
+                tools._current_task_id = request_id
+            
             # 3. 加载 LLM（使用与 main.py 相同的方式）
             api_config = self.config_manager.get_api_config()
             

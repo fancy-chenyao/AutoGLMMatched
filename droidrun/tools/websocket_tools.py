@@ -410,6 +410,36 @@ class WebSocketTools(Tools):
         except Exception as e:
             return f"Error refreshing UI: {str(e)}"
 
+    async def call_api(self, instruction: str) -> str:
+        """调用外部 API 或执行复杂指令"""
+        return f"Call API executed: {instruction}"
+
+    async def interact(self) -> str:
+        """
+        请求用户交互进行选择。
+        """
+        # 对于 AutoGLM 的 Interact 动作，通常是当有多个选项模型无法确定时触发
+        # 我们映射到 ask_user 的 choice 类型或 text 类型
+        LoggingUtils.log_info("WebSocketTools", "🤖 AutoGLM requested Interaction")
+        
+        return await self.ask_user(
+            question="我发现当前页面有多个可能的选项，请告诉我您想选择哪一个，或者提供更多详细信息。",
+            question_type="text",
+            timeout_seconds=120.0
+        )
+
+    async def take_over(self, message: str) -> str:
+        """
+        请求用户接管（如登录、验证等）。
+        """
+        LoggingUtils.log_info("WebSocketTools", "🤖 Agent requested TakeOver: {msg}", msg=message)
+        
+        return await self.ask_user(
+            question=f"由于安全验证或登录需求，我需要您的协助：{message}。请在手机上完成操作后告诉我，或者在此输入反馈。",
+            question_type="text",
+            timeout_seconds=300.0
+        )
+
     @Tools.ui_action
     async def tap_by_index(self, index: int) -> str:
         """

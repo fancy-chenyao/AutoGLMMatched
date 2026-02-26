@@ -544,13 +544,18 @@ class MobileService : Service() {
                     questionHandler?.handleQuestionMessage(message) ?: run {
                         Log.e(TAG, "InteractionQuestionHandler 未初始化，无法处理问题")
                         // 发送默认答案
-                        val questionId = message.optString("question_id", "")
-                        val defaultValue = message.optString("default_value", "")
+                        val data = message.optJSONObject("data") ?: JSONObject()
+                        val questionId = data.optString("question_id", "")
+                        val defaultValue = data.optString("default_value", "")
                         if (questionId.isNotEmpty()) {
-                            val answerMessage = JSONObject().apply {
-                                put("type", "user_answer")
+                            val answerData = JSONObject().apply {
                                 put("question_id", questionId)
                                 put("answer", defaultValue)
+                                put("timestamp", System.currentTimeMillis())
+                            }
+                            val answerMessage = JSONObject().apply {
+                                put("type", "user_answer")
+                                put("data", answerData)
                             }
                             wsClient?.sendMessage(answerMessage)
                         }
