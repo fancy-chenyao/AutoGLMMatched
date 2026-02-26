@@ -29,6 +29,8 @@ import org.junit.rules.TestWatcher
 import org.junit.runner.Description
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.Assume
+import com.example.emplab.BuildConfig
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -131,13 +133,17 @@ class FullAgentTest {
      */
     @Before
     fun setUp() {
+        /**
+         * 若未显式启用端到端测试，则跳过本类所有用例
+         * 以避免在默认环境下因外部依赖未就绪导致构建失败
+         */
+        Assume.assumeTrue("跳过：未启用 E2E 测试", BuildConfig.ENABLE_AGENT_E2E_TESTS)
         debug.step("setUp.start")
         recorder = PerformanceRecorder()
         scenario = activityRule.scenario
         
         // 清理命令处理器缓存与索引管理器，确保单测运行无跨测试残留状态
         CommandHandler.clearCache()
-        Agent.IncrementalIndexManager.reset()
         
         // ActivityTracker 已经在 MainApplication 中注册，这里不需要重复注册
         // 使用 instrumentation 的 idle 等待替代纯 sleep，提升稳定性
@@ -1330,7 +1336,6 @@ class FullAgentTest {
         waitForIdle()
         // 重建后再次清理命令处理器缓存与索引映射，避免旧页面的残留数据影响本轮测试
         CommandHandler.clearCache()
-        Agent.IncrementalIndexManager.reset()
         primeElementTree()
     }
 

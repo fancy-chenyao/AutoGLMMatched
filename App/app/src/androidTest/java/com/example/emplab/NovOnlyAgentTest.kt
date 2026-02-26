@@ -18,6 +18,8 @@ import org.junit.Assert.assertTrue
 import org.junit.rules.TestWatcher
 import org.junit.runner.Description
 import org.junit.runner.RunWith
+import org.junit.Assume
+import com.example.emplab.BuildConfig
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -70,6 +72,10 @@ class NovOnlyAgentTest {
      */
     @Before
     fun setUp() {
+        /**
+         * 若未显式启用端到端测试，则跳过本类所有用例
+         */
+        Assume.assumeTrue("跳过：未启用 E2E 测试", BuildConfig.ENABLE_AGENT_E2E_TESTS)
         debug.step("setUp.start")
         scenario = activityRule.scenario
         recorder = PerformanceRecorder()

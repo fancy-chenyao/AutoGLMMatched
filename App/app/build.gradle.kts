@@ -15,6 +15,7 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "com.example.emplab.TestRunner"
+        buildConfigField("boolean", "ENABLE_AGENT_E2E_TESTS", "false")
     }
 
     buildTypes {
