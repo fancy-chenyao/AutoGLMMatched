@@ -1,14 +1,10 @@
 package com.example.emplab
 
-import Agent.MobileGPTGlobal
-import Agent.MobileService
 import android.content.Intent
-import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
-import android.util.Log
 import android.view.View
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -47,20 +43,9 @@ class MainActivity : AppCompatActivity() {
         // 检查并请求必要权限
         checkAndRequestPermissions()
         
-        // 启动MobileService服务
-        startMobileService()
-        if (!isMobileServiceRunning()) {
-            Log.d("MainActivity", "MobileService服务未运行")
-            Toast.makeText(this, "MobileService服务未运行", Toast.LENGTH_SHORT).show()
-        } else {
-            Log.d("MainActivity", "MobileService服务已运行")
-            Toast.makeText(this, "MobileService服务已运行", Toast.LENGTH_SHORT).show()
-        }
         initViews()
         setupNavigation()
         setupFunctionClicks()
-        // 初始化并连接MobileService
-        connectToMobileService()
 
     }
     
@@ -118,39 +103,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
-    private fun startMobileService() {
-        Log.d("MainActivity", "开始启动MobileService服务")
-        try {
-            val serviceIntent = Intent(this, MobileService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                @Suppress("DEPRECATION")
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "启动MobileService服务时出错: ${e.message}")
-            e.printStackTrace()
-        }
-    }
-    private fun isMobileServiceRunning(): Boolean {
-        val activityManager = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
-        val services = activityManager.getRunningServices(Integer.MAX_VALUE)
-
-        for (service in services) {
-            if (MobileService::class.java.name == service.service.className) {
-                return true
-            }
-        }
-        return false
-    }
-    private fun isMobileServiceWorking(): Boolean {
-        // 发送一个测试广播检查服务是否响应
-        val intent = Intent(MobileGPTGlobal.STRING_ACTION)
-        intent.putExtra(MobileGPTGlobal.INSTRUCTION_EXTRA, "test")
-        sendBroadcast(intent)
-        return true // 假设发送成功即服务工作正常
-    }
+    
     private fun initViews() {
         // 导航栏
         navHome = findViewById(R.id.nav_home)
@@ -290,54 +243,5 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
-    /**
-     * 连接到MobileService并设置当前Activity
-     */
-    private fun connectToMobileService() {
-        // 绑定到MobileService
-        val serviceIntent = Intent(this, MobileService::class.java)
-        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
-    }
-
-    private val serviceConnection = object : android.content.ServiceConnection {
-        override fun onServiceConnected(name: android.content.ComponentName?, service: android.os.IBinder?) {
-            val binder = service as Agent.MobileService.LocalBinder
-            mobileService = binder.getService()
-            // 通知服务当前Activity
-            mobileService?.setCurrentActivity(this@MainActivity)
-        }
-
-        override fun onServiceDisconnected(name: android.content.ComponentName?) {
-            mobileService = null
-        }
-    }
-
-    private var mobileService: Agent.MobileService? = null
     
-
-    
-    override fun onDestroy() {
-        super.onDestroy()
-        // 解绑服务
-        if (mobileService != null) {
-            mobileService?.setCurrentActivity(null) // 通知服务Activity不再活跃
-            try {
-                unbindService(serviceConnection)
-            } catch (e: IllegalArgumentException) {
-                // 服务未绑定的情况
-            }
-        }
-    }
-    
-    override fun onPause() {
-        super.onPause()
-        // 通知服务Activity暂停
-        mobileService?.setCurrentActivity(null)
-    }
-    
-    override fun onResume() {
-        super.onResume()
-        // 通知服务Activity恢复
-        mobileService?.setCurrentActivity(this)
-    }
 }

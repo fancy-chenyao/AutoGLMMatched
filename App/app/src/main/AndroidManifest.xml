@@ -77,12 +77,6 @@
             android:exported="false"
             android:label="员工差旅"
             android:theme="@style/Theme.EmpLab" />
-
-        <service
-            android:name="Agent.MobileService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
         
     </application>
 

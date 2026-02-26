@@ -46,6 +46,18 @@ class AgentFloatingWindowManager(private val context: Context) {
             
             // 设置布局参数
             val layoutParams = createLayoutParams()
+            // 为TYPE_APPLICATION设置正确的window token，避免BadTokenException
+            val activity = (context as android.app.Activity)
+            val token = activity.findViewById<android.view.View>(android.R.id.content)?.windowToken
+                ?: activity.window?.decorView?.windowToken
+            layoutParams.token = token
+            
+            // 若窗口尚未附着，延迟到下一帧再尝试添加，避免BadTokenException
+            val root = activity.findViewById<android.view.View>(android.R.id.content)
+            if (root != null && !root.isAttachedToWindow) {
+                root.post { showFloatingWindow() }
+                return
+            }
             
             // 设置WindowManager和LayoutParams到FloatingView
             floatingView?.setWindowManager(windowManager!!, layoutParams)
@@ -154,8 +166,8 @@ class AgentFloatingWindowManager(private val context: Context) {
         params.y = 100 // 距离顶部100dp
         
         // 设置窗口类型和标志
-        // 仅应用内悬浮窗（依附当前Activity窗口）
-        params.type = WindowManager.LayoutParams.TYPE_APPLICATION
+        // 仅应用内悬浮窗（依附当前Activity窗口的子面板）
+        params.type = WindowManager.LayoutParams.TYPE_APPLICATION_PANEL
         params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                       WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
         

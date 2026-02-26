@@ -1,24 +1,33 @@
 package Agent
 
+import android.app.ActivityManager
 import android.app.Application
 import android.content.ContentProvider
 import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 
 class AgentInitProvider : ContentProvider() {
 
     /**
      * Provider创建时的初始化入口
-     * 在进程安装Provider阶段自动调用，注册ActivityTracker以监听Activity生命周期
+     * 在进程安装Provider阶段自动调用，注册ActivityTracker并按需自动启动MobileService
      * @return 初始化是否成功
      */
     override fun onCreate(): Boolean {
         return try {
-            val app = context?.applicationContext as Application
+            val ctx = context?.applicationContext ?: return false
+            val app = ctx as Application
             ActivityTracker.register(app)
-            Log.i("AgentInitProvider", "ActivityTracker registered via ContentProvider")
+            if (isMainProcess(ctx) && shouldAutoStart(ctx)) {
+                tryStartMobileService(ctx)
+            }
+            Log.i("AgentInitProvider", "Initialized: ActivityTracker registered, autoStart=${shouldAutoStart(ctx)}")
             true
         } catch (e: Exception) {
             Log.e("AgentInitProvider", "Initialization failed: ${e.message}")
@@ -66,5 +75,52 @@ class AgentInitProvider : ContentProvider() {
         selection: String?,
         selectionArgs: Array<out String>?
     ): Int = 0
-}
 
+    /**
+     * 判断当前是否为主进程
+     * 避免在远程进程执行初始化或启动服务
+     * @param context 上下文
+     * @return 是否为主进程
+     */
+    private fun isMainProcess(context: Context): Boolean {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val pid = android.os.Process.myPid()
+        val processName = am.runningAppProcesses?.firstOrNull { it.pid == pid }?.processName
+        return processName == context.packageName
+    }
+
+    /**
+     * 读取应用清单的meta-data，判断是否自动启动服务
+     * 支持宿主通过application节点覆盖该值
+     * @param context 上下文
+     * @return 是否自动启动服务
+     */
+    private fun shouldAutoStart(context: Context): Boolean {
+        return try {
+            val pm = context.packageManager
+            val ai = pm.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA)
+            val md = ai.metaData
+            md?.getBoolean("AgentAutoStart", true) ?: true
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    /**
+     * 在前台或后台安全地启动MobileService
+     * Android O及以上使用startForegroundService，其余版本使用startService
+     * @param context 上下文
+     */
+    private fun tryStartMobileService(context: Context) {
+        try {
+            val intent = Intent(context, MobileService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        } catch (e: Exception) {
+            Log.e("AgentInitProvider", "Start service failed: ${e.message}")
+        }
+    }
+}
