@@ -51,29 +51,49 @@ class MainActivity : AppCompatActivity() {
     
     /**
      * 检查并请求必要权限
+     * 说明：
+     * - API 33+ 使用 READ_MEDIA_* 权限
+     * - API 32- 使用 READ/WRITE_EXTERNAL_STORAGE 权限
+     * - 仅请求在 Manifest 中声明过的权限，避免未声明导致的崩溃
      */
     private fun checkAndRequestPermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val permissionsNeeded = mutableListOf<String>()
-            
-            // 检查存储权限
-            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.WRITE_EXTERNAL_STORAGE) 
-                != PackageManager.PERMISSION_GRANTED) {
-                permissionsNeeded.add(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        val declared = getDeclaredPermissions()
+        val toRequest = mutableListOf<String>()
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val mediaPerms = listOf(
+                android.Manifest.permission.READ_MEDIA_IMAGES,
+                android.Manifest.permission.READ_MEDIA_VIDEO,
+                android.Manifest.permission.READ_MEDIA_AUDIO
+            )
+            mediaPerms.forEach { perm ->
+                if (declared.contains(perm) &&
+                    ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
+                    toRequest.add(perm)
+                }
             }
-            
-            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.READ_EXTERNAL_STORAGE) 
-                != PackageManager.PERMISSION_GRANTED) {
-                permissionsNeeded.add(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val legacyPerms = listOf(
+                android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                android.Manifest.permission.READ_EXTERNAL_STORAGE
+            )
+            legacyPerms.forEach { perm ->
+                if (declared.contains(perm) &&
+                    ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
+                    toRequest.add(perm)
+                }
             }
-            
-            // 如果有需要的权限，请求它们
-            if (permissionsNeeded.isNotEmpty()) {
+        }
+        
+        if (toRequest.isNotEmpty()) {
+            try {
                 ActivityCompat.requestPermissions(
                     this,
-                    permissionsNeeded.toTypedArray(),
+                    toRequest.toTypedArray(),
                     PERMISSION_REQUEST_CODE
                 )
+            } catch (e: Exception) {
+                Toast.makeText(this, "权限请求失败: ${e.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -100,6 +120,19 @@ class MainActivity : AppCompatActivity() {
             } else {
                 Toast.makeText(this, "部分权限被拒绝，可能影响功能正常使用", Toast.LENGTH_LONG).show()
             }
+        }
+    }
+    
+    /**
+     * 获取当前应用在 Manifest 中声明的权限集合
+     */
+    private fun getDeclaredPermissions(): Set<String> {
+        return try {
+            val pi = packageManager.getPackageInfo(packageName, PackageManager.GET_PERMISSIONS)
+            val declared = pi.requestedPermissions ?: emptyArray()
+            declared.toSet()
+        } catch (_: Exception) {
+            emptySet()
         }
     }
     
