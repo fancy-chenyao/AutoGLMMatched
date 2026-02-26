@@ -20,7 +20,6 @@ class AgentFloatingWindowManager(private val context: Context) {
     private var windowManager: WindowManager? = null
     private var floatingView: AgentFloatingView? = null
     private var isShowing = false
-    private var askDialog: AgentAskDialog? = null
     
     /**
      * 显示悬浮窗
@@ -99,41 +98,7 @@ class AgentFloatingWindowManager(private val context: Context) {
         }
     }
     
-    /**
-     * 显示ask对话框
-     */
-    fun showAskDialog(infoName: String, question: String) {
-        if (!AgentErrorHandler.validateQuestion(infoName, question)) {
-            AgentErrorHandler.handleValidationError(context, "问题参数无效: infoName='$infoName', question='$question'")
-            return
-        }
-        
-        try {
-            // 已经有悬浮按钮时，走悬浮按钮内置的显示逻辑
-            floatingView?.let {
-                it.showAskDialog(infoName, question)
-                return
-            }
 
-            // 没有悬浮按钮时，直接以对话框方式显示（仅应用内）
-            if (context is android.app.Activity) {
-                askDialog?.dismiss()
-                askDialog = AgentAskDialog(context).apply {
-                    setQuestion(infoName, question)
-                    setOnSendAnswerListener { info, ques, answer ->
-                        sendAnswerToServer(info, ques, answer)
-                        dismiss()
-                    }
-                    setOnDismissListener { askDialog = null }
-                }
-                askDialog?.show()
-            } else {
-                AgentErrorHandler.handleDialogError(context, "当前上下文非Activity，无法显示应用内对话框")
-            }
-        } catch (e: Exception) {
-            AgentErrorHandler.handleDialogError(context, "显示ask对话框失败: ${e.message}", e)
-        }
-    }
     
     /**
      * 创建悬浮窗视图
@@ -143,10 +108,6 @@ class AgentFloatingWindowManager(private val context: Context) {
         // 设置发送命令回调
         floatingView?.onSendCommand = { command ->
             sendCommandToServer(command)
-        }
-        // 设置发送答案回调
-        floatingView?.onSendAnswer = { infoName, question, answer ->
-            sendAnswerToServer(infoName, question, answer)
         }
     }
     
@@ -232,37 +193,7 @@ class AgentFloatingWindowManager(private val context: Context) {
         }
     }
     
-    /**
-     * 发送答案到服务器
-     */
-    private fun sendAnswerToServer(infoName: String, question: String, answer: String) {
-        try {
-            // 验证输入参数
-            if (!AgentErrorHandler.validateAnswer(infoName, question, answer)) {
-                AgentErrorHandler.handleValidationError(context, "答案信息不完整: infoName='$infoName', question='$question', answer='$answer'")
-                return
-            }
-            
-            // 创建广播Intent发送答案到MobileService
-            val intent = Intent(MobileGPTGlobal.ANSWER_ACTION)
-            intent.putExtra(MobileGPTGlobal.INFO_NAME_EXTRA, infoName)
-            intent.putExtra(MobileGPTGlobal.QUESTION_EXTRA, question)
-            intent.putExtra(MobileGPTGlobal.ANSWER_EXTRA, answer)
-            
-            // 添加时间戳用于调试
-            intent.putExtra("timestamp", System.currentTimeMillis())
-            
-            context.sendBroadcast(intent)
-            
-            Toast.makeText(context, "答案已发送: $answer", Toast.LENGTH_SHORT).show()
-            
-            // 记录日志
-            android.util.Log.d("AgentFloatingWindowManager", "答案已发送: $infoName - $question - $answer")
-            
-        } catch (e: Exception) {
-            AgentErrorHandler.handleCommunicationError(context, "发送答案失败: ${e.message}", e)
-        }
-    }
+
     
     /**
      * 清理资源
