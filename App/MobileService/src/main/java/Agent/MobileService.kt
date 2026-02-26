@@ -694,22 +694,18 @@ class MobileService : Service() {
          currentActivity = activity
          
          if (activity != null) {
-             // 如果有新的Activity且悬浮窗尚未初始化，尝试初始化
-             if (agentFloatingWindow == null) {
-                 agentFloatingWindow = AgentFloatingWindowManager(activity)
-                 // 延迟一点显示悬浮窗，确保Activity完全加载
-                 mainThreadHandler.postDelayed({
-                     agentFloatingWindow?.showFloatingWindow()
-                 }, 1000) // 延迟1秒显示
-             } else if (!agentFloatingWindow!!.isFloatingWindowShowing()) {
-                 // 如果悬浮窗已存在但未显示，尝试显示
+             // 无论悬浮窗是否已初始化，都使用新的Activity重新初始化
+             // 确保悬浮窗使用的是最新的Activity上下文
+             agentFloatingWindow = AgentFloatingWindowManager(activity)
+             // 延迟一点显示悬浮窗，确保Activity完全加载
+             mainThreadHandler.postDelayed({
                  agentFloatingWindow?.showFloatingWindow()
-             }
+             }, 1000) // 延迟1秒显示
          } else {
              // Activity为null时，隐藏悬浮窗
              agentFloatingWindow?.hideFloatingWindow()
          }
-     }
+      }
      
      /**
       * 显示悬浮窗
