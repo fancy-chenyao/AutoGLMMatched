@@ -710,19 +710,6 @@ class MobileService : Service() {
          return agentFloatingWindow?.isFloatingWindowShowing() == true
      }
      
-     /**
-      * 显示ask对话框
-      */
-     fun showAskDialog(infoName: String, question: String) {
-         if (currentActivity != null) {
-             if (agentFloatingWindow == null) {
-                 agentFloatingWindow = AgentFloatingWindowManager(currentActivity!!)
-             }
-             agentFloatingWindow?.showAskDialog(infoName, question)
-         } else {
-             Log.w(TAG, "没有可用的Activity上下文来显示ask对话框")
-         }
-     }
 
     private fun getOrCreateDeviceId(): String {
         val prefs = getSharedPreferences("droidrun_prefs", Context.MODE_PRIVATE)
