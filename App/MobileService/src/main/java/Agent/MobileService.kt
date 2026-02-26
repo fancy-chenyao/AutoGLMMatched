@@ -418,6 +418,7 @@ class MobileService : Service() {
     /**
      * 建立Activity变化到服务UI的桥接
      * 当ActivityTracker检测到Activity进入/离开时，自动调用setCurrentActivity进行悬浮窗管理
+     * 优化：监听注册后立即应用当前Activity，避免服务在Activity已处于resumed状态时需要等待下一次生命周期变更才显示悬浮窗
      */
     private fun initActivityChangeBridge() {
         ActivityTracker.setActivityChangeListener(object : ActivityTracker.ActivityChangeListener {
@@ -429,6 +430,13 @@ class MobileService : Service() {
                 }
             }
         })
+        // 监听注册后立即应用当前Activity，消除首次显示的等待
+        val current = ActivityTracker.getCurrentActivity()
+        if (isHomeActivity(current)) {
+            setCurrentActivity(current)
+        } else {
+            setCurrentActivity(null)
+        }
     }
     
     /**
@@ -691,19 +699,26 @@ class MobileService : Service() {
       * 设置当前活动，用于显示应用内悬浮窗
       */
      fun setCurrentActivity(activity: Activity?) {
+         val previous = currentActivity
          currentActivity = activity
          
          if (activity != null) {
-             // 无论悬浮窗是否已初始化，都使用新的Activity重新初始化
-             // 确保悬浮窗使用的是最新的Activity上下文
+             // 若仍处于同一个Activity且悬浮窗已显示，则无需重复创建与显示
+             if (previous === activity && agentFloatingWindow?.isFloatingWindowShowing() == true) {
+                 return
+             }
+             // 切换Activity或首次进入时，清理旧管理器并创建新管理器
+             agentFloatingWindow?.cleanup()
              agentFloatingWindow = AgentFloatingWindowManager(activity)
-             // 延迟一点显示悬浮窗，确保Activity完全加载
+             // 轻微延迟，确保Activity完成布局后再显示悬浮窗
              mainThreadHandler.postDelayed({
                  agentFloatingWindow?.showFloatingWindow()
-             }, 1000) // 延迟1秒显示
+             }, 300)
          } else {
-             // Activity为null时，隐藏悬浮窗
+             // Activity为null时，隐藏并清理悬浮窗
              agentFloatingWindow?.hideFloatingWindow()
+             agentFloatingWindow?.cleanup()
+             agentFloatingWindow = null
          }
       }
      
