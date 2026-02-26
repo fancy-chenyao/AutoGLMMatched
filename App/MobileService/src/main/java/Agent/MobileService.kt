@@ -12,6 +12,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.Binder
 import android.os.Build
 import android.os.Handler
@@ -219,6 +220,9 @@ class MobileService : Service() {
         // 连接将在用户点击发送指令时建立
 
         
+        // 通过ActivityTracker自动感知当前Activity并驱动悬浮窗显示
+        initActivityChangeBridge()
+        
         Log.d(TAG, "MobileService 初始化完成")
         
     }
@@ -408,6 +412,42 @@ class MobileService : Service() {
             isConnecting = false
             Log.e(TAG, "WebSocket连接初始化失败: ${e.message}", e)
             callback(false)
+        }
+    }
+    
+    /**
+     * 建立Activity变化到服务UI的桥接
+     * 当ActivityTracker检测到Activity进入/离开时，自动调用setCurrentActivity进行悬浮窗管理
+     */
+    private fun initActivityChangeBridge() {
+        ActivityTracker.setActivityChangeListener(object : ActivityTracker.ActivityChangeListener {
+            override fun onActivityChanged(newActivity: Activity?, oldActivity: Activity?) {
+                if (isHomeActivity(newActivity)) {
+                    setCurrentActivity(newActivity)
+                } else {
+                    setCurrentActivity(null)
+                }
+            }
+        })
+    }
+    
+    /**
+     * 判断目标Activity是否为首页（MainActivity）
+     * 通过Application的meta-data配置AgentHomeActivity；若未配置则使用默认类名
+     * @param activity 当前Activity
+     * @return 是否为首页Activity
+     */
+    private fun isHomeActivity(activity: Activity?): Boolean {
+        if (activity == null) return false
+        return try {
+            val app = activity.application
+            val ai = app.packageManager.getApplicationInfo(app.packageName, PackageManager.GET_META_DATA)
+            val md = ai.metaData
+            val targetName = md?.getString("AgentHomeActivity") ?: "com.example.emplab.MainActivity"
+            activity::class.java.name == targetName
+        } catch (_: Exception) {
+            // 兜底：未能读取meta-data时，按类名为MainActivity判断
+            activity::class.java.simpleName == "MainActivity"
         }
     }
     

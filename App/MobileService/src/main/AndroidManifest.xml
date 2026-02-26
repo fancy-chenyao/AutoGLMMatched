@@ -2,6 +2,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
           xmlns:tools="http://schemas.android.com/tools">
     <application>
+        <meta-data
+            android:name="AgentAutoStart"
+            android:value="true" />
+        <meta-data
+            android:name="AgentHomeActivity"
+            android:value="com.example.emplab.MainActivity" />
+        <service
+            android:name="Agent.MobileService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <provider
             android:name="Agent.AgentInitProvider"
             android:authorities="${applicationId}.mobileservice.init"
